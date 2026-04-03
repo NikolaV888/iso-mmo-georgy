@@ -22,4 +22,9 @@ export const GameConfig = {
 
     // --- Death & Respawn ---
     RESPAWN_DELAY_MS: 3000,
+
+    // --- Chat ---
+    CHAT_RANGE: 8,              // Tiles — only players within this receive the message
+    CHAT_MAX_LENGTH: 100,       // Characters
+    CHAT_BUBBLE_DURATION_MS: 5000, // How long the bubble stays visible
 } as const;

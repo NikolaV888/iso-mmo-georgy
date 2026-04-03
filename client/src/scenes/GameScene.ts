@@ -30,6 +30,9 @@ interface TrackedPlayer {
     healthBar: Phaser.GameObjects.Graphics;
     body: Phaser.GameObjects.Rectangle;
     head: Phaser.GameObjects.Arc;
+    // Chat
+    chatBubble: Phaser.GameObjects.Container | null;
+    chatBubbleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // ── Scene ────────────────────────────────────────────────────────────────────
@@ -42,6 +45,10 @@ export class GameScene extends Phaser.Scene {
 
     // State
     private players: Map<string, TrackedPlayer> = new Map();
+
+    // Chat
+    private chatInput: HTMLInputElement | null = null;
+    private chatOpen: boolean = false;
 
     // Isometric tile dimensions
     private readonly TILE_W = 64;
@@ -73,6 +80,17 @@ export class GameScene extends Phaser.Scene {
             })
             .setScrollFactor(0)
             .setDepth(2000);
+
+        // Chat hint
+        this.add
+            .text(10, 36, 'Press Enter to chat', {
+                fontSize: '11px',
+                color: '#88ffaa99',
+                fontFamily: 'monospace',
+            })
+            .setScrollFactor(0)
+            .setDepth(2000);
+
 
         // ── Connect to Colyseus ───────────────────────────────────────────
         const serverUrl =
@@ -161,7 +179,24 @@ export class GameScene extends Phaser.Scene {
             this.removePlayer(data.sessionId);
         });
 
+        /** Proximity chat message received */
+        this.room.onMessage(
+            'chatMessage',
+            (data: { sessionId: string; text: string }) => {
+                const p = this.players.get(data.sessionId);
+                if (p) this.spawnChatBubble(p, data.text);
+            }
+        );
+
         // ── Input ─────────────────────────────────────────────────────────
+
+        // Build the HTML chat input overlay
+        this.createChatInput();
+
+        // Press Enter to open chat
+        this.input.keyboard?.on('keydown-ENTER', () => {
+            if (!this.chatOpen) this.openChat();
+        });
 
         // Ground click → send move
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -250,6 +285,8 @@ export class GameScene extends Phaser.Scene {
             hp: data.hp, maxHp: data.maxHp,
             isDead: data.isDead,
             container, healthBar, body, head,
+            chatBubble: null,
+            chatBubbleTimer: null,
         };
 
         this.players.set(sessionId, tracked);
@@ -259,6 +296,7 @@ export class GameScene extends Phaser.Scene {
     private removePlayer(sessionId: string) {
         const p = this.players.get(sessionId);
         if (p) {
+            if (p.chatBubbleTimer) clearTimeout(p.chatBubbleTimer);
             p.container.destroy();
             this.players.delete(sessionId);
         }
@@ -328,6 +366,155 @@ export class GameScene extends Phaser.Scene {
             duration: 400,
             onComplete: () => circle.destroy(),
         });
+    }
+
+    /** Speech bubble above a player's head */
+    private spawnChatBubble(p: TrackedPlayer, text: string) {
+        // Clear any existing bubble
+        if (p.chatBubble) {
+            if (p.chatBubbleTimer) clearTimeout(p.chatBubbleTimer);
+            p.chatBubble.destroy();
+            p.chatBubble = null;
+            p.chatBubbleTimer = null;
+        }
+
+        // Measure text to size the background
+        const tempText = this.add.text(0, 0, text, {
+            fontSize: '11px',
+            fontFamily: 'monospace',
+            color: '#ffffff',
+            wordWrap: { width: 120 },
+        });
+        const tw = tempText.width;
+        const th = tempText.height;
+        tempText.destroy();
+
+        const pad   = 6;
+        const boxW  = tw + pad * 2;
+        const boxH  = th + pad * 2;
+        const tipH  = 6;   // little downward triangle
+        // Position: above health bar (health bar is at y=-54, so bubble base at ~-62)
+        const baseY = -66;
+
+        // Background bubble
+        const bg = this.add.graphics();
+        bg.fillStyle(0x111111, 0.88);
+        bg.lineStyle(1, 0x44ff88, 0.9);
+        // Rounded rect
+        bg.fillRoundedRect(-boxW / 2, baseY - boxH, boxW, boxH, 5);
+        bg.strokeRoundedRect(-boxW / 2, baseY - boxH, boxW, boxH, 5);
+        // Tail triangle
+        bg.fillTriangle(
+            -5, baseY,
+            5,  baseY,
+            0,  baseY + tipH
+        );
+
+        // Text
+        const label = this.add.text(-boxW / 2 + pad, baseY - boxH + pad, text, {
+            fontSize: '11px',
+            fontFamily: 'monospace',
+            color: '#eeffee',
+            wordWrap: { width: 120 },
+        });
+
+        const bubble = this.add.container(0, 0, [bg, label]);
+        p.container.add(bubble);
+        p.chatBubble = bubble;
+
+        // Fade out after duration
+        const DURATION = 5000;
+        const FADE     = 800;
+        p.chatBubbleTimer = setTimeout(() => {
+            this.tweens.add({
+                targets: bubble,
+                alpha: 0,
+                duration: FADE,
+                onComplete: () => {
+                    bubble.destroy();
+                    p.chatBubble = null;
+                    p.chatBubbleTimer = null;
+                },
+            });
+        }, DURATION);
+    }
+
+    /** Create the HTML chat input overlay (hidden by default) */
+    private createChatInput() {
+        const wrapper = document.createElement('div');
+        Object.assign(wrapper.style, {
+            position:     'fixed',
+            bottom:       '20px',
+            left:         '50%',
+            transform:    'translateX(-50%)',
+            display:      'none',
+            alignItems:   'center',
+            gap:          '8px',
+            zIndex:       '9999',
+        });
+
+        const hint = document.createElement('span');
+        hint.textContent = 'say:';
+        Object.assign(hint.style, {
+            color:      '#88ffaa',
+            fontFamily: 'monospace',
+            fontSize:   '13px',
+        });
+
+        const input = document.createElement('input');
+        Object.assign(input.style, {
+            background:   '#0d1f0d',
+            border:       '1px solid #44ff88',
+            borderRadius: '4px',
+            color:        '#eeffee',
+            fontFamily:   'monospace',
+            fontSize:     '13px',
+            padding:      '4px 10px',
+            outline:      'none',
+            width:        '280px',
+        });
+        input.maxLength = 100;
+        input.placeholder = 'Type and press Enter…';
+
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation(); // prevent Phaser from swallowing keys
+            if (e.key === 'Enter') {
+                const text = input.value.trim();
+                if (text && this.room) {
+                    this.room.send('chat', { text });
+                }
+                this.closeChat();
+            } else if (e.key === 'Escape') {
+                this.closeChat();
+            }
+        });
+
+        wrapper.appendChild(hint);
+        wrapper.appendChild(input);
+        document.body.appendChild(wrapper);
+
+        this.chatInput = input;
+        (input as any)._wrapper = wrapper;
+    }
+
+    private openChat() {
+        if (!this.chatInput) return;
+        this.chatOpen = true;
+        const wrapper = (this.chatInput as any)._wrapper as HTMLElement;
+        wrapper.style.display = 'flex';
+        this.chatInput.value  = '';
+        // Briefly pause Phaser keyboard so game doesn't react to typing
+        if (this.input.keyboard) this.input.keyboard.enabled = false;
+        this.chatInput.focus();
+    }
+
+    private closeChat() {
+        if (!this.chatInput) return;
+        this.chatOpen = false;
+        const wrapper = (this.chatInput as any)._wrapper as HTMLElement;
+        wrapper.style.display = 'none';
+        this.chatInput.blur();
+        if (this.input.keyboard) this.input.keyboard.enabled = true;
     }
 
     // ── Iso math ─────────────────────────────────────────────────────────────

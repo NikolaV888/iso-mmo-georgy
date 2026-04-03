@@ -46,6 +46,26 @@ export class GameRoom extends Room<GameState> {
             result.died.forEach(sessionId => this.broadcast("playerDied", { sessionId }));
         });
 
+        /** Proximity chat — only players within CHAT_RANGE tiles receive it */
+        this.onMessage("chat", (client: Client, data: { text: string }) => {
+            const sender = this.state.players.get(client.sessionId);
+            if (!sender) return;
+
+            const text = String(data.text ?? "").trim().slice(0, GameConfig.CHAT_MAX_LENGTH);
+            if (!text) return;
+
+            this.clients.forEach((c) => {
+                const other = this.state.players.get(c.sessionId);
+                if (!other) return;
+                const dx = other.x - sender.x;
+                const dy = other.y - sender.y;
+                if (Math.sqrt(dx * dx + dy * dy) <= GameConfig.CHAT_RANGE) {
+                    c.send("chatMessage", { sessionId: client.sessionId, text });
+                }
+            });
+        });
+
+
         // ── Game loop ──────────────────────────────────────────────────────
         this.setSimulationInterval((deltaTime: number) => {
             this.update(deltaTime);
