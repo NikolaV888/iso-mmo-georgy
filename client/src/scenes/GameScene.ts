@@ -1,22 +1,51 @@
 import Phaser from 'phaser';
 import * as Colyseus from 'colyseus.js';
 
-// Simple player data we track client-side
-interface PlayerData {
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface PlayerSnapshot {
     x: number;
     y: number;
-    shape: Phaser.GameObjects.Container;
+    hp: number;
+    maxHp: number;
+    isDead: boolean;
 }
 
-export class GameScene extends Phaser.Scene {
-    client!: Colyseus.Client;
-    room!: Colyseus.Room;
-    players: { [sessionId: string]: PlayerData } = {};
-    mySessionId: string = '';
+interface CombatEvent {
+    attacker: string;
+    target: string;
+    damage: number;
+    targetHp: number;
+}
 
-    // Isometric tile sizes (must match how we draw the grid)
-    tileW = 64;
-    tileH = 32;
+interface TrackedPlayer {
+    // Authoritative state (from server)
+    x: number;
+    y: number;
+    hp: number;
+    maxHp: number;
+    isDead: boolean;
+    // Phaser objects
+    container: Phaser.GameObjects.Container;
+    healthBar: Phaser.GameObjects.Graphics;
+    body: Phaser.GameObjects.Rectangle;
+    head: Phaser.GameObjects.Arc;
+}
+
+// ── Scene ────────────────────────────────────────────────────────────────────
+
+export class GameScene extends Phaser.Scene {
+    // Network
+    private client!: Colyseus.Client;
+    private room!: Colyseus.Room;
+    private mySessionId: string = '';
+
+    // State
+    private players: Map<string, TrackedPlayer> = new Map();
+
+    // Isometric tile dimensions
+    private readonly TILE_W = 64;
+    private readonly TILE_H = 32;
 
     constructor() {
         super('GameScene');
@@ -25,91 +54,121 @@ export class GameScene extends Phaser.Scene {
     preload() {}
 
     async create() {
-        // Draw grid immediately
+        this.cameras.main.setBackgroundColor('#1a1a2e');
+
+        // Draw grid first (it sits at depth 0)
         this.drawGrid();
 
-        // Centre camera on middle of the 20x20 grid
+        // Centre camera on middle of 20×20 grid
         const centre = this.cartToIso(10, 10);
         this.cameras.main.centerOn(centre.x, centre.y);
 
-        // Status label (fixed to camera)
-        const statusText = this.add.text(10, 10, 'Connecting to server...', {
-            fontSize: '14px',
-            color: '#ffffff',
-            backgroundColor: '#00000099',
-            padding: { x: 8, y: 4 },
-        }).setScrollFactor(0).setDepth(1000);
+        // HUD status label (fixed to camera)
+        const statusText = this.add
+            .text(10, 10, 'Connecting…', {
+                fontSize: '13px',
+                color: '#ffffff',
+                backgroundColor: '#00000099',
+                padding: { x: 8, y: 4 },
+            })
+            .setScrollFactor(0)
+            .setDepth(2000);
 
-        // Connect — uses VITE_SERVER_URL in production, localhost in dev
-        const serverUrl = import.meta.env.VITE_SERVER_URL ?? 'ws://localhost:2567';
+        // ── Connect to Colyseus ───────────────────────────────────────────
+        const serverUrl =
+            (import.meta as any).env?.VITE_SERVER_URL ?? 'ws://localhost:2567';
         this.client = new Colyseus.Client(serverUrl);
+
         try {
             this.room = await this.client.joinOrCreate('game_room');
-            statusText.setText('✓ Connected');
-            console.log('Joined!', this.room.sessionId);
+            statusText.setText(`✓ ${this.room.sessionId}`);
         } catch (e) {
             statusText.setText('✗ Could not connect to server');
-            console.error('Join error:', e);
+            console.error(e);
             return;
         }
 
-        // Server tells us our own sessionId immediately on join
+        // ── Message handlers ──────────────────────────────────────────────
+
+        /** Server tells us our own session ID */
         this.room.onMessage('init', (data: { sessionId: string }) => {
             this.mySessionId = data.sessionId;
-            console.log('My session ID:', this.mySessionId);
         });
 
-        // Server broadcasts a full snapshot of all player positions every tick
-        this.room.onMessage('snapshot', (snapshot: Record<string, { x: number; y: number }>) => {
-            // Add/update shapes for all players in snapshot
-            for (const [sessionId, pos] of Object.entries(snapshot)) {
-                if (!this.players[sessionId]) {
-                    // New player — create their shape
-                    this.players[sessionId] = {
-                        x: pos.x,
-                        y: pos.y,
-                        shape: this.createPlayerShape(sessionId === this.mySessionId),
-                    };
+        /** Full world snapshot at 20Hz */
+        this.room.onMessage(
+            'snapshot',
+            (snap: Record<string, PlayerSnapshot>) => {
+                // Add / update
+                for (const [sid, data] of Object.entries(snap)) {
+                    if (!this.players.has(sid)) {
+                        this.addPlayer(sid, data);
+                    }
+                    const p = this.players.get(sid)!;
+                    p.x     = data.x;
+                    p.y     = data.y;
+                    p.hp    = data.hp;
+                    p.maxHp = data.maxHp;
+                    p.isDead = data.isDead;
+                    this.updateHealthBar(p);
+                    this.updateDeadState(p);
                 }
-                // Update position
-                this.players[sessionId].x = pos.x;
-                this.players[sessionId].y = pos.y;
+                // Remove players no longer in snapshot
+                for (const sid of this.players.keys()) {
+                    if (!snap[sid]) this.removePlayer(sid);
+                }
             }
+        );
 
-            // Remove players that are no longer in the snapshot
-            for (const sessionId of Object.keys(this.players)) {
-                if (!snapshot[sessionId]) {
-                    this.players[sessionId].shape.destroy();
-                    delete this.players[sessionId];
-                }
+        /** Hit feedback — show floating damage number */
+        this.room.onMessage('combatEvent', (evt: CombatEvent) => {
+            const target = this.players.get(evt.target);
+            if (target) {
+                this.spawnDamageNumber(
+                    target.container.x,
+                    target.container.y - 50,
+                    evt.damage
+                );
             }
         });
 
-        // Server tells us when a player explicitly leaves
+        /** A player just died */
+        this.room.onMessage('playerDied', (data: { sessionId: string }) => {
+            const p = this.players.get(data.sessionId);
+            if (p) {
+                p.isDead = true;
+                p.hp = 0;
+                this.updateDeadState(p);
+                this.updateHealthBar(p);
+            }
+        });
+
+        /** A player respawned */
+        this.room.onMessage(
+            'playerRespawned',
+            (data: { sessionId: string; x: number; y: number }) => {
+                const p = this.players.get(data.sessionId);
+                if (p) {
+                    p.isDead = false;
+                    p.x = data.x;
+                    p.y = data.y;
+                }
+            }
+        );
+
+        /** A player disconnected */
         this.room.onMessage('playerLeft', (data: { sessionId: string }) => {
-            if (this.players[data.sessionId]) {
-                this.players[data.sessionId].shape.destroy();
-                delete this.players[data.sessionId];
-            }
+            this.removePlayer(data.sessionId);
         });
 
-        // Click to move
+        // ── Input ─────────────────────────────────────────────────────────
+
+        // Ground click → send move
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-            const cart = this.isoToCart(world.x, world.y);
+            const cart  = this.isoToCart(world.x, world.y);
             this.room.send('move', { x: cart.x, y: cart.y });
-
-            // Click ripple effect
-            const isoPos = this.cartToIso(cart.x, cart.y);
-            const ripple = this.add.circle(isoPos.x, isoPos.y, 6, 0xffffff, 0.9);
-            this.tweens.add({
-                targets: ripple,
-                alpha: 0,
-                scaleX: 3,
-                scaleY: 3,
-                duration: 400,
-                onComplete: () => ripple.destroy(),
-            });
+            this.spawnClickRipple(world.x, world.y);
         });
 
         // Arrow keys pan camera
@@ -124,102 +183,198 @@ export class GameScene extends Phaser.Scene {
         }
     }
 
+    // ── Phaser update loop ───────────────────────────────────────────────────
+
     update() {
-        // Smooth-interpolate all player shapes towards their server positions
-        for (const [, pd] of Object.entries(this.players)) {
-            const iso = this.cartToIso(pd.x, pd.y);
-            const targetX = iso.x;
-            const targetY = iso.y;
-
-            // Lerp the container towards the iso position
-            pd.shape.x += (targetX - pd.shape.x) * 0.2;
-            pd.shape.y += (targetY - pd.shape.y) * 0.2;
-
-            // Depth sort by sum of cartesian coords (higher = drawn on top)
-            pd.shape.setDepth(pd.x + pd.y);
+        for (const [, p] of this.players) {
+            if (p.isDead) continue;
+            const iso = this.cartToIso(p.x, p.y);
+            // Lerp container toward authoritative iso position
+            p.container.x += (iso.x - p.container.x) * 0.25;
+            p.container.y += (iso.y - p.container.y) * 0.25;
+            p.container.setDepth(p.x + p.y);
         }
     }
 
-    /** Create a small humanoid-ish placeholder character */
-    createPlayerShape(isLocal: boolean): Phaser.GameObjects.Container {
-        const color = isLocal ? 0x00ff88 : 0xff5555;
-        const shadowColor = isLocal ? 0x007744 : 0x882222;
+    // ── Player management ────────────────────────────────────────────────────
 
-        const container = this.add.container(0, 0);
+    private addPlayer(sessionId: string, data: PlayerSnapshot) {
+        const isLocal = sessionId === this.mySessionId;
+        const iso = this.cartToIso(data.x, data.y);
 
-        // Shadow ellipse on the ground
-        const shadow = this.add.ellipse(0, 0, 20, 10, 0x000000, 0.35);
-        container.add(shadow);
+        // Shadow
+        const shadow = this.add.ellipse(0, 2, 22, 10, 0x000000, 0.4);
 
-        // Body (rectangle)
-        const body = this.add.rectangle(0, -20, 14, 20, color);
-        container.add(body);
+        // Body
+        const body = this.add.rectangle(0, -18, 14, 22, isLocal ? 0x00ff88 : 0xff5555);
 
-        // Head (circle)
-        const head = this.add.circle(0, -36, 8, color);
-        container.add(head);
+        // Head
+        const head = this.add.circle(0, -38, 9, isLocal ? 0x00ff88 : 0xff5555);
+        const headRing = this.add.circle(0, -38, 10);
+        headRing.setStrokeStyle(1.5, isLocal ? 0x009944 : 0xaa2222);
+        headRing.setFillStyle(0, 0);
 
-        // Outline on head
-        const headOutline = this.add.circle(0, -36, 9);
-        headOutline.setStrokeStyle(1.5, shadowColor);
-        headOutline.setFillStyle(0, 0);
-        container.add(headOutline);
+        // Health bar background + foreground (drawn fresh each update)
+        const healthBar = this.add.graphics();
 
-        return container;
+        // Container groups everything
+        const container = this.add.container(iso.x, iso.y, [
+            shadow, body, head, headRing, healthBar,
+        ]);
+        container.setDepth(data.x + data.y);
+
+        // Make it interactive for click-to-attack
+        // The hitbox is a rectangle around the body+head area
+        container.setSize(28, 52);
+        container.setInteractive();
+        container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            pointer.event.stopPropagation();
+            if (!isLocal && this.mySessionId) {
+                this.room.send('attack', { targetId: sessionId });
+            }
+        });
+        // Highlight on hover for enemy players
+        if (!isLocal) {
+            container.on('pointerover', () => {
+                body.setFillStyle(0xff8888);
+                head.setFillStyle(0xff8888);
+            });
+            container.on('pointerout', () => {
+                body.setFillStyle(0xff5555);
+                head.setFillStyle(0xff5555);
+            });
+        }
+
+        const tracked: TrackedPlayer = {
+            x: data.x, y: data.y,
+            hp: data.hp, maxHp: data.maxHp,
+            isDead: data.isDead,
+            container, healthBar, body, head,
+        };
+
+        this.players.set(sessionId, tracked);
+        this.updateHealthBar(tracked);
     }
 
-    // Cartesian → Isometric screen coords
-    cartToIso(cartX: number, cartY: number) {
+    private removePlayer(sessionId: string) {
+        const p = this.players.get(sessionId);
+        if (p) {
+            p.container.destroy();
+            this.players.delete(sessionId);
+        }
+    }
+
+    private updateHealthBar(p: TrackedPlayer) {
+        const g = p.healthBar;
+        g.clear();
+
+        const barW = 30;
+        const barH = 5;
+        const x    = -barW / 2;
+        const y    = -54;   // above head
+
+        // Background
+        g.fillStyle(0x330000, 0.85);
+        g.fillRect(x, y, barW, barH);
+
+        // Foreground
+        const ratio = Math.max(0, p.hp / p.maxHp);
+        const color = ratio > 0.5 ? 0x44ff44 : ratio > 0.25 ? 0xffaa00 : 0xff2222;
+        g.fillStyle(color, 1);
+        g.fillRect(x, y, Math.round(barW * ratio), barH);
+
+        // Border
+        g.lineStyle(1, 0x000000, 0.6);
+        g.strokeRect(x, y, barW, barH);
+    }
+
+    private updateDeadState(p: TrackedPlayer) {
+        const alive = !p.isDead;
+        p.body.setAlpha(alive ? 1 : 0.25);
+        p.head.setAlpha(alive ? 1 : 0.25);
+    }
+
+    // ── Visual helpers ───────────────────────────────────────────────────────
+
+    /** Floating damage number that floats up and fades */
+    private spawnDamageNumber(x: number, y: number, damage: number) {
+        const txt = this.add
+            .text(x, y, `-${damage}`, {
+                fontSize: '16px',
+                fontStyle: 'bold',
+                color: '#ff4444',
+                stroke: '#000000',
+                strokeThickness: 3,
+            })
+            .setOrigin(0.5)
+            .setDepth(3000);
+
+        this.tweens.add({
+            targets: txt,
+            y: y - 40,
+            alpha: 0,
+            duration: 900,
+            ease: 'Cubic.Out',
+            onComplete: () => txt.destroy(),
+        });
+    }
+
+    private spawnClickRipple(x: number, y: number) {
+        const circle = this.add.circle(x, y, 5, 0xffffff, 0.7).setDepth(100);
+        this.tweens.add({
+            targets: circle,
+            scaleX: 3, scaleY: 3,
+            alpha: 0,
+            duration: 400,
+            onComplete: () => circle.destroy(),
+        });
+    }
+
+    // ── Iso math ─────────────────────────────────────────────────────────────
+
+    private cartToIso(cx: number, cy: number) {
         return {
-            x: (cartX - cartY) * (this.tileW / 2),
-            y: (cartX + cartY) * (this.tileH / 2),
+            x: (cx - cy) * (this.TILE_W / 2),
+            y: (cx + cy) * (this.TILE_H / 2),
         };
     }
 
-    // Isometric screen coords → Cartesian
-    isoToCart(isoX: number, isoY: number) {
+    private isoToCart(ix: number, iy: number) {
         return {
-            x: (isoY / this.tileH) + (isoX / this.tileW),
-            y: (isoY / this.tileH) - (isoX / this.tileW),
+            x: iy / this.TILE_H + ix / this.TILE_W,
+            y: iy / this.TILE_H - ix / this.TILE_W,
         };
     }
 
-    drawGrid() {
-        const graphics = this.add.graphics();
-        const gridSize = 20;
+    // ── Grid ─────────────────────────────────────────────────────────────────
 
-        // Alternating tile fill
-        for (let row = 0; row < gridSize; row++) {
-            for (let col = 0; col < gridSize; col++) {
+    private drawGrid() {
+        const g = this.add.graphics().setDepth(0);
+        const SIZE = 20;
+
+        for (let row = 0; row < SIZE; row++) {
+            for (let col = 0; col < SIZE; col++) {
                 const tl = this.cartToIso(col,     row);
                 const tr = this.cartToIso(col + 1, row);
                 const br = this.cartToIso(col + 1, row + 1);
                 const bl = this.cartToIso(col,     row + 1);
-
                 const even = (row + col) % 2 === 0;
-                graphics.fillStyle(even ? 0x2a3a2a : 0x1e2e1e, 1);
-                graphics.fillPoints([
-                    { x: tl.x, y: tl.y },
-                    { x: tr.x, y: tr.y },
-                    { x: br.x, y: br.y },
-                    { x: bl.x, y: bl.y },
-                ], true);
+                g.fillStyle(even ? 0x1e3a1e : 0x172d17, 1);
+                g.fillPoints(
+                    [{ x: tl.x, y: tl.y }, { x: tr.x, y: tr.y },
+                     { x: br.x, y: br.y }, { x: bl.x, y: bl.y }],
+                    true
+                );
             }
         }
 
-        // Grid lines
-        graphics.lineStyle(1, 0x3a5a3a, 0.8);
-        for (let i = 0; i <= gridSize; i++) {
-            const s1 = this.cartToIso(i, 0);
-            const e1 = this.cartToIso(i, gridSize);
-            graphics.moveTo(s1.x, s1.y);
-            graphics.lineTo(e1.x, e1.y);
-
-            const s2 = this.cartToIso(0, i);
-            const e2 = this.cartToIso(gridSize, i);
-            graphics.moveTo(s2.x, s2.y);
-            graphics.lineTo(e2.x, e2.y);
+        g.lineStyle(1, 0x2d6a2d, 0.7);
+        for (let i = 0; i <= SIZE; i++) {
+            const a = this.cartToIso(i, 0),  b = this.cartToIso(i, SIZE);
+            const c = this.cartToIso(0, i),  d = this.cartToIso(SIZE, i);
+            g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+            g.moveTo(c.x, c.y); g.lineTo(d.x, d.y);
         }
-        graphics.strokePath();
+        g.strokePath();
     }
 }
