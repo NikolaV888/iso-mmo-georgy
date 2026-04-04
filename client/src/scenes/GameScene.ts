@@ -47,6 +47,17 @@ interface TrackedPlayer {
     chatBubbleTimer: ReturnType<typeof setTimeout> | null;
 }
 
+interface RoomConnectionTransport {
+    isOpen?: boolean;
+    ws?: {
+        readyState?: number;
+    };
+}
+
+interface RoomConnectionLike {
+    transport?: RoomConnectionTransport;
+}
+
 // ── Scene ────────────────────────────────────────────────────────────────────
 import { HudManager } from '../ui/HudOverlay';
 
@@ -334,7 +345,8 @@ export class GameScene extends Phaser.Scene {
         container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
             const isEnemy = sessionId !== this.mySessionId;
-            if (isEnemy && this.room && !data.isDead) {
+            const tracked = this.players.get(sessionId);
+            if (isEnemy && tracked && !tracked.isDead) {
                 this.safeSend('setTarget', { targetId: sessionId });
             }
         });
@@ -621,15 +633,50 @@ export class GameScene extends Phaser.Scene {
         if (this.input.keyboard) this.input.keyboard.enabled = true;
     }
 
-    private safeSend(type: string, payload: unknown) {
-        if (!this.room || !this.isRoomActive) return;
+    private safeSend(type: string, payload: unknown): boolean {
+        if (!this.canSendToRoom()) return false;
 
         try {
             this.room.send(type, payload);
+            return true;
         } catch (error) {
             this.isRoomActive = false;
-            console.error(`[Send failed] ${type}`, error);
+            if (this.isRoomTransportOpen()) {
+                console.error(`[Send failed] ${type}`, error);
+            } else {
+                console.warn(`[Send dropped] ${type} skipped because the room connection is closing.`);
+            }
+            return false;
         }
+    }
+
+    private canSendToRoom(): boolean {
+        if (!this.room || !this.isRoomActive) return false;
+
+        const isOpen = this.isRoomTransportOpen();
+        if (!isOpen) {
+            this.isRoomActive = false;
+        }
+        return isOpen;
+    }
+
+    private isRoomTransportOpen(): boolean {
+        const connection = (this.room as Colyseus.Room & {
+            connection?: RoomConnectionLike;
+        }).connection;
+        const transport = connection?.transport;
+
+        if (typeof transport?.isOpen === 'boolean') {
+            return transport.isOpen;
+        }
+
+        const readyState = transport?.ws?.readyState;
+        if (typeof readyState === 'number' && typeof WebSocket !== 'undefined') {
+            return readyState === WebSocket.OPEN;
+        }
+
+        // If Colyseus changes its internals, fall back to the scene-level flag.
+        return true;
     }
 
     // ── Iso math ─────────────────────────────────────────────────────────────
