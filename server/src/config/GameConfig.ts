@@ -15,10 +15,12 @@ export const GameConfig = {
     PLAYER_SPEED: 4.5,          // Tiles per second (consistent in all directions)
 
     // --- Combat ---
-    PLAYER_MAX_HP: 100,
-    PLAYER_ATTACK_DAMAGE: 15,
-    PLAYER_ATTACK_RANGE: 2.5,   // Tiles (cartesian distance)
-    PLAYER_ATTACK_COOLDOWN_MS: 1000,
+    PLAYER_MAX_HP:             100,
+    PLAYER_ATTACK_DAMAGE:       15,
+    PLAYER_ATTACK_RANGE:       2.5,   // Tiles (cartesian distance)
+    PLAYER_ATTACK_SPEED:       1.0,   // Attacks per second (base). Higher = faster.
+                                       // Future: modified by AGI, weapon type, buffs.
+                                       // Cooldown (ms) = 1000 / attackSpeed
 
     // --- Death & Respawn ---
     RESPAWN_DELAY_MS: 3000,

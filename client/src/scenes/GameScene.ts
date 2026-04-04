@@ -9,6 +9,7 @@ interface PlayerSnapshot {
     hp: number;
     maxHp: number;
     isDead: boolean;
+    combatTargetId: string;
 }
 
 interface CombatEvent {
@@ -25,11 +26,14 @@ interface TrackedPlayer {
     hp: number;
     maxHp: number;
     isDead: boolean;
+    combatTargetId: string;
     // Phaser objects
     container: Phaser.GameObjects.Container;
     healthBar: Phaser.GameObjects.Graphics;
     body: Phaser.GameObjects.Rectangle;
     head: Phaser.GameObjects.Arc;
+    // Target selection ring (shown when we are targeting this player)
+    targetRing: Phaser.GameObjects.Ellipse | null;
     // Chat
     chatBubble: Phaser.GameObjects.Container | null;
     chatBubbleTimer: ReturnType<typeof setTimeout> | null;
@@ -45,6 +49,8 @@ export class GameScene extends Phaser.Scene {
 
     // State
     private players: Map<string, TrackedPlayer> = new Map();
+    /** sessionId of the local player's current auto-attack target */
+    private myTargetId: string = '';
 
     // Chat
     private chatInput: HTMLInputElement | null = null;
@@ -123,13 +129,32 @@ export class GameScene extends Phaser.Scene {
                         this.addPlayer(sid, data);
                     }
                     const p = this.players.get(sid)!;
-                    p.x     = data.x;
-                    p.y     = data.y;
-                    p.hp    = data.hp;
-                    p.maxHp = data.maxHp;
-                    p.isDead = data.isDead;
+                    p.x              = data.x;
+                    p.y              = data.y;
+                    p.hp             = data.hp;
+                    p.maxHp          = data.maxHp;
+                    p.isDead         = data.isDead;
+                    p.combatTargetId = data.combatTargetId;
                     this.updateHealthBar(p);
                     this.updateDeadState(p);
+                }
+                // Sync local player's target ring
+                if (this.mySessionId) {
+                    const me = this.players.get(this.mySessionId);
+                    const newTarget = me?.combatTargetId ?? '';
+                    if (newTarget !== this.myTargetId) {
+                        // Clear old ring
+                        if (this.myTargetId) {
+                            const old = this.players.get(this.myTargetId);
+                            if (old) this.updateTargetRing(old, false);
+                        }
+                        // Show new ring
+                        this.myTargetId = newTarget;
+                        if (newTarget) {
+                            const tgt = this.players.get(newTarget);
+                            if (tgt) this.updateTargetRing(tgt, true);
+                        }
+                    }
                 }
                 // Remove players no longer in snapshot
                 for (const sid of this.players.keys()) {
@@ -198,11 +223,15 @@ export class GameScene extends Phaser.Scene {
             if (!this.chatOpen) this.openChat();
         });
 
-        // Ground click → send move
+        // Ground click → move + clear auto-attack target
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
             const cart  = this.isoToCart(world.x, world.y);
             this.room.send('move', { x: cart.x, y: cart.y });
+            // Moving clears the combat target (server mirrors this too)
+            if (this.myTargetId) {
+                this.room.send('clearTarget', {});
+            }
             this.spawnClickRipple(world.x, world.y);
         });
 
@@ -265,7 +294,8 @@ export class GameScene extends Phaser.Scene {
         container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
             if (!isLocal && this.mySessionId) {
-                this.room.send('attack', { targetId: sessionId });
+                // Lock this player as the auto-attack target
+                this.room.send('setTarget', { targetId: sessionId });
             }
         });
         // Highlight on hover for enemy players
@@ -284,7 +314,9 @@ export class GameScene extends Phaser.Scene {
             x: data.x, y: data.y,
             hp: data.hp, maxHp: data.maxHp,
             isDead: data.isDead,
+            combatTargetId: data.combatTargetId,
             container, healthBar, body, head,
+            targetRing: null,
             chatBubble: null,
             chatBubbleTimer: null,
         };
@@ -297,10 +329,42 @@ export class GameScene extends Phaser.Scene {
         const p = this.players.get(sessionId);
         if (p) {
             if (p.chatBubbleTimer) clearTimeout(p.chatBubbleTimer);
+            if (this.myTargetId === sessionId) this.myTargetId = '';
             p.container.destroy();
             this.players.delete(sessionId);
         }
     }
+
+    /**
+     * Show or hide the target-lock ring under a player.
+     * Pulsing orange ellipse at the player's feet (y=0 in container space).
+     */
+    private updateTargetRing(p: TrackedPlayer, show: boolean) {
+        if (!show) {
+            if (p.targetRing) {
+                this.tweens.killTweensOf(p.targetRing);
+                p.targetRing.destroy();
+                p.targetRing = null;
+            }
+            return;
+        }
+        if (p.targetRing) return;
+
+        const ring = this.add.ellipse(0, 0, 28, 12, 0xff8800, 0);
+        ring.setStrokeStyle(2, 0xff8800, 0.9);
+        p.container.addAt(ring, 0); // behind character
+        p.targetRing = ring;
+
+        this.tweens.add({
+            targets: ring,
+            alpha: { from: 0.3, to: 1 },
+            duration: 500,
+            yoyo: true,
+            repeat: -1,
+            ease: 'Sine.easeInOut',
+        });
+    }
+
 
     private updateHealthBar(p: TrackedPlayer) {
         const g = p.healthBar;

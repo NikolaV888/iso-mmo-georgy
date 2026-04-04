@@ -2,6 +2,8 @@ import { MapSchema } from "@colyseus/schema";
 import { Player } from "../rooms/schema/GameState";
 import { GameConfig } from "../config/GameConfig";
 
+// ── Result types ──────────────────────────────────────────────────────────────
+
 export interface CombatEvent {
     attacker: string;
     target: string;
@@ -11,76 +13,79 @@ export interface CombatEvent {
 
 export interface CombatResult {
     events: CombatEvent[];
-    died: string[];         // sessionIds that just died this tick
+    died: string[];         // sessionIds that died this tick
     respawned: string[];    // sessionIds that respawned this tick
 }
 
+// ── System ────────────────────────────────────────────────────────────────────
+
 /**
- * CombatSystem — server-authoritative attack resolution, death, and respawn.
+ * CombatSystem — server-authoritative auto-attack, death, and respawn.
  *
- * Rules:
- *  - Attacker must be alive
- *  - Target must exist and be alive
- *  - Distance (cartesian) must be within PLAYER_ATTACK_RANGE
- *  - Cooldown of PLAYER_ATTACK_COOLDOWN_MS must have elapsed
- *  - On death: freeze position, schedule respawn after RESPAWN_DELAY_MS
+ * Auto-attack lifecycle:
+ *  1. Client sends `setTarget { targetId }` → GameRoom sets player.combatTargetId
+ *  2. Each tick, `processAutoAttacks` checks every player's combatTargetId:
+ *       - Skips if attacker dead, no target, or target doesn't exist / is dead
+ *       - Skips if out of range (target stays locked; attacks resume when in range)
+ *       - Fires attack if cooldown elapsed (1000ms / attackSpeed)
+ *  3. On target death → combatTargetId cleared for ALL players targeting it
+ *  4. On target disconnect → GameRoom clears combatTargetId via clearTargetForAll()
+ *
+ * Future extension points:
+ *  - StatsSystem: write computed stats (from gear/buffs) onto Player before this runs
+ *  - Critical hits: add critChance / critMultiplier to Player stats
+ *  - Elemental damage: add damageType to CombatEvent
+ *  - AoE: loop multiple targets per event
+ *  - Skills: call applyHit() directly with custom damage / effect params
  */
 export class CombatSystem {
+
     /**
-     * Process an attack request.
-     * Returns a CombatResult describing what happened, or null if invalid.
+     * Run auto-attacks for every player that has a combatTargetId set.
+     * Called each physics tick from GameRoom.
      */
-    processAttack(
-        attackerSessionId: string,
-        targetSessionId: string,
-        players: MapSchema<Player>,
-        now: number
-    ): CombatResult | null {
-        const attacker = players.get(attackerSessionId);
-        const target   = players.get(targetSessionId);
+    processAutoAttacks(players: MapSchema<Player>, now: number): CombatResult {
+        const result: CombatResult = { events: [], died: [], respawned: [] };
 
-        if (!attacker || !target)            return null;
-        if (attacker.isDead || target.isDead) return null;
-        if (attackerSessionId === targetSessionId) return null;
+        players.forEach((attacker: Player, attackerSid: string) => {
+            if (attacker.isDead)            return;
+            if (!attacker.combatTargetId)   return;
 
-        // Cooldown check
-        if (now - attacker.lastAttackTime < GameConfig.PLAYER_ATTACK_COOLDOWN_MS) return null;
+            const target = players.get(attacker.combatTargetId);
 
-        // Range check (cartesian distance)
-        const dx = target.x - attacker.x;
-        const dy = target.y - attacker.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance > GameConfig.PLAYER_ATTACK_RANGE) return null;
+            // Target gone or dead → unlock
+            if (!target || target.isDead) {
+                attacker.combatTargetId = "";
+                return;
+            }
 
-        // Apply attack
-        attacker.lastAttackTime = now;
-        const damage = GameConfig.PLAYER_ATTACK_DAMAGE;
-        target.hp = Math.max(0, target.hp - damage);
+            // Range check — out of range: keep target locked, just don't fire yet
+            const dx = target.x - attacker.x;
+            const dy = target.y - attacker.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > attacker.attackRange) return;
 
-        const result: CombatResult = {
-            events: [{
-                attacker: attackerSessionId,
-                target: targetSessionId,
-                damage,
-                targetHp: target.hp,
-            }],
-            died: [],
-            respawned: [],
-        };
+            // Cooldown check: 1000ms / attackSpeed
+            const cooldown = 1000 / attacker.attackSpeed;
+            if (now - attacker.lastAttackTime < cooldown) return;
 
-        // Death check
-        if (target.hp <= 0) {
-            target.isDead = true;
-            target.hp = 0;
-            // Freeze at current position
-            target.targetX = target.x;
-            target.targetY = target.y;
-            // Schedule respawn
-            target.respawnAt = now + GameConfig.RESPAWN_DELAY_MS;
-            result.died.push(targetSessionId);
-        }
+            // ── Fire ──────────────────────────────────────────────────────
+            this.applyHit(attacker, attackerSid, target, attacker.combatTargetId, now, result);
+        });
 
         return result;
+    }
+
+    /**
+     * Clear a player's combat target for every player that is targeting them.
+     * Call this when a player leaves the room so no one is locked onto a ghost.
+     */
+    clearTargetForAll(leavingSid: string, players: MapSchema<Player>): void {
+        players.forEach((player: Player) => {
+            if (player.combatTargetId === leavingSid) {
+                player.combatTargetId = "";
+            }
+        });
     }
 
     /**
@@ -88,20 +93,55 @@ export class CombatSystem {
      */
     processRespawns(players: MapSchema<Player>, now: number): string[] {
         const respawned: string[] = [];
-
         players.forEach((player: Player, sessionId: string) => {
             if (player.isDead && player.respawnAt > 0 && now >= player.respawnAt) {
-                player.isDead = false;
-                player.hp = player.maxHp;
-                player.x = GameConfig.SPAWN_X;
-                player.y = GameConfig.SPAWN_Y;
-                player.targetX = GameConfig.SPAWN_X;
-                player.targetY = GameConfig.SPAWN_Y;
-                player.respawnAt = 0;
+                player.isDead          = false;
+                player.hp              = player.maxHp;
+                player.x               = GameConfig.SPAWN_X;
+                player.y               = GameConfig.SPAWN_Y;
+                player.targetX         = GameConfig.SPAWN_X;
+                player.targetY         = GameConfig.SPAWN_Y;
+                player.combatTargetId  = "";
+                player.respawnAt       = 0;
                 respawned.push(sessionId);
             }
         });
-
         return respawned;
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Core hit application — extracted so Skills can call it too later.
+     * Stamps lastAttackTime, reduces HP, triggers death if needed.
+     */
+    private applyHit(
+        attacker: Player,
+        attackerSid: string,
+        target: Player,
+        targetSid: string,
+        now: number,
+        result: CombatResult
+    ): void {
+        attacker.lastAttackTime = now;
+
+        const damage = attacker.attackDamage;
+        target.hp = Math.max(0, target.hp - damage);
+
+        result.events.push({
+            attacker: attackerSid,
+            target: targetSid,
+            damage,
+            targetHp: target.hp,
+        });
+
+        if (target.hp <= 0) {
+            target.isDead = true;
+            target.hp = 0;
+            target.targetX = target.x;
+            target.targetY = target.y;
+            target.respawnAt = now + GameConfig.RESPAWN_DELAY_MS;
+            result.died.push(targetSid);
+        }
     }
 }

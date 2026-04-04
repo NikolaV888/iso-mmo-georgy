@@ -4,53 +4,62 @@ import { GameConfig } from "../config/GameConfig";
 import { MovementSystem } from "../systems/MovementSystem";
 import { CombatSystem } from "../systems/CombatSystem";
 
-const TICK_MS        = 1000 / GameConfig.TICK_RATE_HZ;
-const BROADCAST_MS   = 1000 / GameConfig.BROADCAST_RATE_HZ;
+const TICK_MS       = 1000 / GameConfig.TICK_RATE_HZ;
+const BROADCAST_MS  = 1000 / GameConfig.BROADCAST_RATE_HZ;
 
 export class GameRoom extends Room<GameState> {
     maxClients = 100;
 
-    private movementSystem = new MovementSystem();
-    private combatSystem   = new CombatSystem();
-    private broadcastAccumulator = 0;   // ms since last broadcast
+    private movementSystem       = new MovementSystem();
+    private combatSystem         = new CombatSystem();
+    private broadcastAccumulator = 0;
 
     onCreate(_options: any) {
         this.setState(new GameState());
 
-        // ── Message handlers ───────────────────────────────────────────────
+        // ── Message handlers ─────────────────────────────────────────────
 
-        /** Client requests to move toward a cartesian position */
+        /**
+         * Move — clears combat target so walking away stops the auto-attack loop.
+         * In the future a "chase-to-attack" mode can re-engage when in range.
+         */
         this.onMessage("move", (client: Client, data: { x: number; y: number }) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isDead) return;
             player.targetX = data.x;
             player.targetY = data.y;
+            // Clicking the ground disengages auto-attack
+            player.combatTargetId = "";
         });
 
-        /** Client requests to attack a target */
-        this.onMessage("attack", (client: Client, data: { targetId: string }) => {
-            const now = Date.now();
-            const result = this.combatSystem.processAttack(
-                client.sessionId,
-                data.targetId,
-                this.state.players,
-                now
-            );
+        /**
+         * setTarget — lock an auto-attack target.
+         * Clicking an enemy calls this; the server loop does the rest.
+         */
+        this.onMessage("setTarget", (client: Client, data: { targetId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isDead) return;
 
-            if (!result) return;
+            const target = this.state.players.get(data.targetId);
+            if (!target || target.isDead) return;
 
-            // Broadcast combat events for visual feedback
-            result.events.forEach(evt => this.broadcast("combatEvent", evt));
-
-            // Broadcast death notifications
-            result.died.forEach(sessionId => this.broadcast("playerDied", { sessionId }));
+            player.combatTargetId = data.targetId;
         });
 
-        /** Proximity chat — only players within CHAT_RANGE tiles receive it */
+        /**
+         * clearTarget — manually disengage (right-click, UI button, etc.).
+         */
+        this.onMessage("clearTarget", (client: Client) => {
+            const player = this.state.players.get(client.sessionId);
+            if (player) player.combatTargetId = "";
+        });
+
+        /**
+         * Proximity chat — send only to players within CHAT_RANGE tiles.
+         */
         this.onMessage("chat", (client: Client, data: { text: string }) => {
             const sender = this.state.players.get(client.sessionId);
             if (!sender) return;
-
             const text = String(data.text ?? "").trim().slice(0, GameConfig.CHAT_MAX_LENGTH);
             if (!text) return;
 
@@ -65,30 +74,30 @@ export class GameRoom extends Room<GameState> {
             });
         });
 
-
-        // ── Game loop ──────────────────────────────────────────────────────
-        this.setSimulationInterval((deltaTime: number) => {
-            this.update(deltaTime);
-        }, TICK_MS);
+        // ── Game loop ────────────────────────────────────────────────────
+        this.setSimulationInterval((dt: number) => this.update(dt), TICK_MS);
     }
 
     onJoin(client: Client, _options: any) {
         console.log(`[Room] ${client.sessionId} joined`);
         const player = new Player();
-        player.x        = GameConfig.SPAWN_X;
-        player.y        = GameConfig.SPAWN_Y;
-        player.targetX  = GameConfig.SPAWN_X;
-        player.targetY  = GameConfig.SPAWN_Y;
-        player.hp       = GameConfig.PLAYER_MAX_HP;
-        player.maxHp    = GameConfig.PLAYER_MAX_HP;
+        player.x            = GameConfig.SPAWN_X;
+        player.y            = GameConfig.SPAWN_Y;
+        player.targetX      = GameConfig.SPAWN_X;
+        player.targetY      = GameConfig.SPAWN_Y;
+        player.hp           = GameConfig.PLAYER_MAX_HP;
+        player.maxHp        = GameConfig.PLAYER_MAX_HP;
+        player.attackDamage = GameConfig.PLAYER_ATTACK_DAMAGE;
+        player.attackSpeed  = GameConfig.PLAYER_ATTACK_SPEED;
+        player.attackRange  = GameConfig.PLAYER_ATTACK_RANGE;
         this.state.players.set(client.sessionId, player);
-
-        // Tell this client their own sessionId
         client.send("init", { sessionId: client.sessionId });
     }
 
     onLeave(client: Client, _consented: boolean) {
         console.log(`[Room] ${client.sessionId} left`);
+        // Clear this player as a combat target for everyone before removing
+        this.combatSystem.clearTargetForAll(client.sessionId, this.state.players);
         this.state.players.delete(client.sessionId);
         this.broadcast("playerLeft", { sessionId: client.sessionId });
     }
@@ -97,22 +106,31 @@ export class GameRoom extends Room<GameState> {
         console.log(`[Room] ${this.roomId} disposed`);
     }
 
-    // ── Private ─────────────────────────────────────────────────────────────
+    // ── Private ──────────────────────────────────────────────────────────────
 
     private update(deltaTime: number) {
         const now = Date.now();
 
         // 1. Movement
-        const anyMoved = this.movementSystem.update(this.state.players, deltaTime);
+        this.movementSystem.update(this.state.players, deltaTime);
 
-        // 2. Respawns
-        const respawned = this.combatSystem.processRespawns(this.state.players, now);
-        respawned.forEach(sessionId => {
-            const p = this.state.players.get(sessionId);
-            if (p) this.broadcast("playerRespawned", { sessionId, x: p.x, y: p.y });
+        // 2. Auto-attacks
+        const combatResult = this.combatSystem.processAutoAttacks(this.state.players, now);
+        combatResult.events.forEach(evt  => this.broadcast("combatEvent", evt));
+        combatResult.died.forEach(sid    => {
+            // Clear everyone targeting the dead player
+            this.combatSystem.clearTargetForAll(sid, this.state.players);
+            this.broadcast("playerDied", { sessionId: sid });
         });
 
-        // 3. Broadcast snapshot at BROADCAST_RATE_HZ
+        // 3. Respawns
+        const respawned = this.combatSystem.processRespawns(this.state.players, now);
+        respawned.forEach(sid => {
+            const p = this.state.players.get(sid);
+            if (p) this.broadcast("playerRespawned", { sessionId: sid, x: p.x, y: p.y });
+        });
+
+        // 4. Snapshot broadcast at BROADCAST_RATE_HZ
         this.broadcastAccumulator += deltaTime;
         if (this.broadcastAccumulator >= BROADCAST_MS) {
             this.broadcastAccumulator = 0;
@@ -125,15 +143,17 @@ export class GameRoom extends Room<GameState> {
             x: number; y: number;
             hp: number; maxHp: number;
             isDead: boolean;
+            combatTargetId: string;
         }> = {};
 
-        this.state.players.forEach((player: Player, sessionId: string) => {
-            snapshot[sessionId] = {
-                x:      player.x,
-                y:      player.y,
-                hp:     player.hp,
-                maxHp:  player.maxHp,
-                isDead: player.isDead,
+        this.state.players.forEach((p: Player, sid: string) => {
+            snapshot[sid] = {
+                x:              p.x,
+                y:              p.y,
+                hp:             p.hp,
+                maxHp:          p.maxHp,
+                isDead:         p.isDead,
+                combatTargetId: p.combatTargetId,
             };
         });
 
