@@ -77,6 +77,7 @@ export class GameScene extends Phaser.Scene {
     private hudManager!: HudManager;
 
     // Chat
+    private chatWrapper: HTMLDivElement | null = null;
     private chatInput: HTMLInputElement | null = null;
     private chatOpen: boolean = false;
 
@@ -91,6 +92,9 @@ export class GameScene extends Phaser.Scene {
     preload() {}
 
     async create() {
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleSceneShutdown, this);
+        this.events.once(Phaser.Scenes.Events.DESTROY, this.handleSceneShutdown, this);
+
         this.cameras.main.setBackgroundColor('#1a1a2e');
 
         // Draw grid first (it sits at depth 0)
@@ -128,11 +132,9 @@ export class GameScene extends Phaser.Scene {
         this.hudManager = new HudManager();
 
         // ── Connect to Colyseus ───────────────────────────────────────────
-        const serverUrl =
-            (import.meta as any).env?.VITE_SERVER_URL ?? 'ws://localhost:2567';
-        this.client = new Colyseus.Client(serverUrl);
-
         try {
+            const serverUrl = this.resolveServerUrl();
+            this.client = new Colyseus.Client(serverUrl);
             this.room = await this.client.joinOrCreate('game_room');
             // Set immediately — don't wait for 'init' message to avoid a race
             // where the first snapshot arrives before the init message is processed.
@@ -141,6 +143,9 @@ export class GameScene extends Phaser.Scene {
             statusText.setText(`✓ ${this.room.sessionId}`);
         } catch (e) {
             statusText.setText('✗ Could not connect to server');
+            const message = e instanceof Error ? e.message : 'Could not connect to server';
+            statusText.setText(`âœ— ${message}`);
+            statusText.setText(`Error: ${message}`);
             console.error(e);
             return;
         }
@@ -557,7 +562,13 @@ export class GameScene extends Phaser.Scene {
 
     /** Create the HTML chat input overlay (hidden by default) */
     private createChatInput() {
+        this.chatWrapper?.remove();
+
+        const existingWrapper = document.getElementById('chat-input-wrapper');
+        if (existingWrapper) existingWrapper.remove();
+
         const wrapper = document.createElement('div');
+        wrapper.id = 'chat-input-wrapper';
         Object.assign(wrapper.style, {
             position:     'fixed',
             bottom:       '20px',
@@ -609,15 +620,14 @@ export class GameScene extends Phaser.Scene {
         wrapper.appendChild(input);
         document.body.appendChild(wrapper);
 
+        this.chatWrapper = wrapper;
         this.chatInput = input;
-        (input as any)._wrapper = wrapper;
     }
 
     private openChat() {
-        if (!this.chatInput) return;
+        if (!this.chatInput || !this.chatWrapper) return;
         this.chatOpen = true;
-        const wrapper = (this.chatInput as any)._wrapper as HTMLElement;
-        wrapper.style.display = 'flex';
+        this.chatWrapper.style.display = 'flex';
         this.chatInput.value  = '';
         // Briefly pause Phaser keyboard so game doesn't react to typing
         if (this.input.keyboard) this.input.keyboard.enabled = false;
@@ -625,12 +635,38 @@ export class GameScene extends Phaser.Scene {
     }
 
     private closeChat() {
-        if (!this.chatInput) return;
+        if (!this.chatInput || !this.chatWrapper) return;
         this.chatOpen = false;
-        const wrapper = (this.chatInput as any)._wrapper as HTMLElement;
-        wrapper.style.display = 'none';
+        this.chatWrapper.style.display = 'none';
         this.chatInput.blur();
         if (this.input.keyboard) this.input.keyboard.enabled = true;
+    }
+
+    private handleSceneShutdown() {
+        this.closeChat();
+        this.chatWrapper?.remove();
+        this.chatWrapper = null;
+        this.chatInput = null;
+        this.hudManager?.destroy();
+    }
+
+    private resolveServerUrl(): string {
+        const configuredUrl = (import.meta as any).env?.VITE_SERVER_URL?.trim();
+        if (configuredUrl) return configuredUrl;
+
+        const hostname = window.location.hostname;
+        const isLocalhost =
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            hostname === '::1';
+
+        if (isLocalhost) {
+            return 'ws://localhost:2567';
+        }
+
+        throw new Error(
+            'Missing VITE_SERVER_URL for this deployment. Configure the hosted websocket server URL instead of falling back to localhost.'
+        );
     }
 
     private safeSend(type: string, payload: unknown): boolean {

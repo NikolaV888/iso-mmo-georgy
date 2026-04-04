@@ -15,6 +15,9 @@ export class HudManager {
     private statLabels: Record<string, HTMLSpanElement> = {};
 
     constructor() {
+        const existing = document.getElementById('hud-wrapper');
+        if (existing) existing.remove();
+
         this.wrapper = document.createElement('div');
         this.wrapper.id = 'hud-wrapper';
 
@@ -30,6 +33,14 @@ export class HudManager {
         this.buildTopLeftPortrait();
         this.buildBottomActionBar();
         this.buildStatsWindow();
+    }
+
+    public destroy() {
+        this.wrapper.remove();
+        this.statsWindow = null;
+        this.hpLabel = null;
+        this.levelLabel = null;
+        this.statLabels = {};
     }
 
     /** Called 20x a second when the snapshot arrives */
