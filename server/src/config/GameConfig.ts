@@ -41,6 +41,7 @@ export const GameConfig = {
     // --- RPG Stats Base ---
     PLAYER_BASE_LEVEL: 1,
     PLAYER_BASE_EXP: 0,
+    PLAYER_BASE_GOLD: 0,
     PLAYER_BASE_STR: 5,
     PLAYER_BASE_AGI: 5,
     PLAYER_BASE_INT: 5,
@@ -48,6 +49,10 @@ export const GameConfig = {
     LEVEL_UP_STAT_POINTS: 3,
     EXP_LEVEL_BASE: 35,
     EXP_LEVEL_GROWTH: 15,
+
+    // --- Party ---
+    PARTY_MAX_SIZE: 4,
+    PARTY_SHARE_RANGE: 8.0,
 
     // --- Death & Respawn ---
     RESPAWN_DELAY_MS: 3000,
@@ -65,6 +70,7 @@ export const GameConfig = {
     SLIME_ATTACK_RANGE: 1.7,
     SLIME_ATTACK_SPEED: 0.9,
     SLIME_EXP_REWARD: 18,
+    SLIME_GOLD_REWARD: 7,
     SLIME_HOP_INTERVAL_MS: 1400,
     SLIME_JUMP_SPEED: 4.8,
 
@@ -74,6 +80,7 @@ export const GameConfig = {
     BAT_ATTACK_RANGE: 2.2,
     BAT_ATTACK_SPEED: 1.2,
     BAT_EXP_REWARD: 24,
+    BAT_GOLD_REWARD: 11,
 
     // --- Chat ---
     CHAT_RANGE: 8,

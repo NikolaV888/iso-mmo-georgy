@@ -13,6 +13,11 @@ export interface ExpGainResult {
     leveledUp: boolean;
 }
 
+export interface GoldGainResult {
+    amount: number;
+    totalGold: number;
+}
+
 export class StatsSystem {
     initializePlayer(player: Player, name: string): void {
         player.name = name;
@@ -21,10 +26,12 @@ export class StatsSystem {
         player.canFly = false;
         player.isFlying = false;
         player.expReward = 0;
+        player.goldReward = 0;
         player.bonusStatPoints = 0;
 
         player.level = GameConfig.PLAYER_BASE_LEVEL;
         player.exp = GameConfig.PLAYER_BASE_EXP;
+        player.gold = GameConfig.PLAYER_BASE_GOLD;
         player.str = GameConfig.PLAYER_BASE_STR;
         player.agi = GameConfig.PLAYER_BASE_AGI;
         player.int = GameConfig.PLAYER_BASE_INT;
@@ -41,6 +48,7 @@ export class StatsSystem {
         player.bonusStatPoints = 0;
         player.exp = 0;
         player.expToNextLevel = 0;
+        player.gold = 0;
         player.level = 1;
 
         if (kind === "slime") {
@@ -58,6 +66,7 @@ export class StatsSystem {
             player.attackRange = GameConfig.SLIME_ATTACK_RANGE;
             player.moveSpeed = GameConfig.SLIME_SPEED;
             player.expReward = GameConfig.SLIME_EXP_REWARD;
+            player.goldReward = GameConfig.SLIME_GOLD_REWARD;
         } else {
             player.name = "Bat";
             player.canFly = true;
@@ -73,6 +82,7 @@ export class StatsSystem {
             player.attackRange = GameConfig.BAT_ATTACK_RANGE;
             player.moveSpeed = GameConfig.BAT_SPEED;
             player.expReward = GameConfig.BAT_EXP_REWARD;
+            player.goldReward = GameConfig.BAT_GOLD_REWARD;
         }
 
         this.resetPosition(player, x, y);
@@ -162,6 +172,21 @@ export class StatsSystem {
         player.bonusStatPoints -= 1;
         this.recalculatePlayerDerivedStats(player, { preserveHpRatio: true });
         return true;
+    }
+
+    grantGold(player: Player, amount: number): GoldGainResult {
+        if (player.isMob || amount <= 0) {
+            return {
+                amount: 0,
+                totalGold: player.gold,
+            };
+        }
+
+        player.gold += amount;
+        return {
+            amount,
+            totalGold: player.gold,
+        };
     }
 
     resetPosition(player: Player, x: number, y: number): void {

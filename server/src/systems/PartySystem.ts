@@ -1,4 +1,5 @@
 import { MapSchema } from "@colyseus/schema";
+import { GameConfig } from "../config/GameConfig";
 import { Player } from "../rooms/schema/GameState";
 
 interface PartyRecord {
@@ -40,6 +41,8 @@ export class PartySystem {
             return { error: "You are already in a party." };
         }
 
+        this.clearInvitesForTarget(ownerId);
+
         const partyId = `party:${this.nextPartyId++}`;
         this.parties.set(partyId, {
             id: partyId,
@@ -62,6 +65,10 @@ export class PartySystem {
 
         if (party.leaderId !== leaderId) {
             return { error: "Only the party leader can invite players." };
+        }
+
+        if (party.members.size >= GameConfig.PARTY_MAX_SIZE) {
+            return { error: "Your party is already full." };
         }
 
         if (leaderId === targetId) {
@@ -104,9 +111,18 @@ export class PartySystem {
             return { error: "That party no longer exists." };
         }
 
+        if (party.members.size >= GameConfig.PARTY_MAX_SIZE) {
+            invites.delete(partyId);
+            if (invites.size === 0) this.invitesByTarget.delete(targetId);
+            return { error: "That party is already full." };
+        }
+
         party.members.add(targetId);
         this.partyByMember.set(targetId, party.id);
         this.clearInvitesForTarget(targetId);
+        if (party.members.size >= GameConfig.PARTY_MAX_SIZE) {
+            this.clearInvitesForParty(party.id);
+        }
         return { partyId: party.id };
     }
 
@@ -158,6 +174,45 @@ export class PartySystem {
         return this.partyByMember.has(memberId)
             ? this.removeMemberFromParty(memberId)
             : {};
+    }
+
+    getPartyMemberIds(memberId: string): string[] {
+        const party = this.getPartyForMember(memberId);
+        return party ? Array.from(party.members) : [];
+    }
+
+    getRewardRecipients(
+        sourceId: string,
+        players: MapSchema<Player>,
+        range: number
+    ): string[] {
+        const party = this.getPartyForMember(sourceId);
+        const source = players.get(sourceId);
+
+        if (!source || !party) {
+            return source ? [sourceId] : [];
+        }
+
+        const recipients = Array.from(party.members).filter((memberId) => {
+            const candidate = players.get(memberId);
+            if (!candidate || candidate.isDead || candidate.isMob) return false;
+
+            const dx = candidate.x - source.x;
+            const dy = candidate.y - source.y;
+            return Math.sqrt(dx * dx + dy * dy) <= range;
+        });
+
+        recipients.sort((a, b) => {
+            if (a === sourceId) return -1;
+            if (b === sourceId) return 1;
+            return 0;
+        });
+
+        if (!recipients.includes(sourceId) && source && !source.isDead && !source.isMob) {
+            recipients.unshift(sourceId);
+        }
+
+        return recipients.length > 0 ? recipients : [sourceId];
     }
 
     getPartyStateFor(sessionId: string, players: MapSchema<Player>): PartyStateView {
@@ -221,11 +276,13 @@ export class PartySystem {
 
         if (party.members.size === 0) {
             this.parties.delete(party.id);
+            this.clearInvitesForParty(party.id);
             return { newLeaderId: null, disbanded: true };
         }
 
         if (party.leaderId === memberId) {
             party.leaderId = Array.from(party.members)[0];
+            this.clearInvitesForParty(party.id);
         }
 
         return { newLeaderId: party.leaderId, disbanded: false };
@@ -233,5 +290,15 @@ export class PartySystem {
 
     private clearInvitesForTarget(targetId: string): void {
         this.invitesByTarget.delete(targetId);
+    }
+
+    private clearInvitesForParty(partyId: string): void {
+        this.invitesByTarget.forEach((invites, targetId) => {
+            if (!invites.has(partyId)) return;
+            invites.delete(partyId);
+            if (invites.size === 0) {
+                this.invitesByTarget.delete(targetId);
+            }
+        });
     }
 }

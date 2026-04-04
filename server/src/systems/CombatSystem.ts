@@ -2,7 +2,6 @@ import { MapSchema } from "@colyseus/schema";
 import { GameConfig } from "../config/GameConfig";
 import { Player } from "../rooms/schema/GameState";
 import { PhysicsSystem } from "./PhysicsSystem";
-import { ExpGainResult, StatsSystem } from "./StatsSystem";
 import { TerrainSystem } from "./TerrainSystem";
 
 export interface CombatEvent {
@@ -16,12 +15,15 @@ export interface CombatEvent {
 export interface DeathResult {
     sessionId: string;
     killerId: string;
+    targetName: string;
+    wasMob: boolean;
+    expReward: number;
+    goldReward: number;
 }
 
 export interface CombatResult {
     events: CombatEvent[];
     died: DeathResult[];
-    expGains: Array<ExpGainResult & { sessionId: string }>;
 }
 
 export class CombatSystem {
@@ -44,10 +46,9 @@ export class CombatSystem {
     processAutoAttacks(
         players: MapSchema<Player>,
         now: number,
-        physicsSystem: PhysicsSystem,
-        statsSystem: StatsSystem
+        physicsSystem: PhysicsSystem
     ): CombatResult {
-        const result: CombatResult = { events: [], died: [], expGains: [] };
+        const result: CombatResult = { events: [], died: [] };
 
         players.forEach((attacker: Player, attackerSid: string) => {
             if (attacker.isDead || attacker.isKnockedDown || !attacker.combatTargetId) return;
@@ -73,7 +74,6 @@ export class CombatSystem {
                 attacker.combatTargetId,
                 now,
                 physicsSystem,
-                statsSystem,
                 result
             );
         });
@@ -152,7 +152,6 @@ export class CombatSystem {
         targetSid: string,
         now: number,
         physicsSystem: PhysicsSystem,
-        statsSystem: StatsSystem,
         result: CombatResult
     ): void {
         attacker.lastAttackTime = now;
@@ -204,14 +203,14 @@ export class CombatSystem {
                 ? GameConfig.MOB_RESPAWN_DELAY_MS
                 : GameConfig.RESPAWN_DELAY_MS
         );
-        result.died.push({ sessionId: targetSid, killerId: attackerSid });
-
-        if (!target.isMob || attacker.isMob) return;
-
-        const gain = statsSystem.grantExp(attacker, target.expReward);
-        if (gain.amount > 0) {
-            result.expGains.push({ sessionId: attackerSid, ...gain });
-        }
+        result.died.push({
+            sessionId: targetSid,
+            killerId: attackerSid,
+            targetName: target.name,
+            wasMob: target.isMob,
+            expReward: target.expReward,
+            goldReward: target.goldReward,
+        });
     }
 
     private advanceCombo(attacker: Player, targetSid: string, now: number): number {

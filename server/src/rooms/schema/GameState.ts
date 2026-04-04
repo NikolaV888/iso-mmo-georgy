@@ -29,6 +29,7 @@ export class Player extends Schema {
     @type("number") level: number = 1;
     @type("number") exp: number = 0;
     @type("number") expToNextLevel: number = 0;
+    @type("number") gold: number = 0;
     @type("number") bonusStatPoints: number = 0;
     @type("number") str: number = 5;
     @type("number") agi: number = 5;
@@ -64,6 +65,7 @@ export class Player extends Schema {
     hoverPhaseOffset: number = Math.random() * 1000;
     inputX: number = 0;
     inputY: number = 0;
+    goldReward: number = 0;
 }
 
 export class GameState extends Schema {

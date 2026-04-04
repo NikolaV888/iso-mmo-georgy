@@ -6,6 +6,7 @@ export interface HudPlayerData {
     level: number;
     exp: number;
     expToNextLevel: number;
+    gold: number;
     bonusStatPoints: number;
     hp: number;
     maxHp: number;
@@ -83,6 +84,7 @@ export class HudManager {
     private packTabButtons: Partial<Record<InventoryTab, HTMLButtonElement>> = {};
     private packGrid: HTMLDivElement | null = null;
     private packDetails: HTMLDivElement | null = null;
+    private goldLabel: HTMLSpanElement | null = null;
     private activePackTab: InventoryTab = "equip";
 
     private partyStatus: HTMLDivElement | null = null;
@@ -160,6 +162,7 @@ export class HudManager {
         this.packTabButtons = {};
         this.packGrid = null;
         this.packDetails = null;
+        this.goldLabel = null;
         this.partyStatus = null;
         this.partyMembers = null;
         this.inviteSelect = null;
@@ -179,6 +182,7 @@ export class HudManager {
         const level = this.readNumber(player.level, 1);
         const exp = this.readNumber(player.exp, 0);
         const expToNextLevel = this.readNumber(player.expToNextLevel, 35);
+        const gold = this.readNumber(player.gold, 0);
         const bonusStatPoints = this.readNumber(player.bonusStatPoints, 0);
         const hp = this.readNumber(player.hp, 100);
         const maxHp = this.readNumber(player.maxHp, 100);
@@ -195,6 +199,7 @@ export class HudManager {
         if (this.hpLabel) this.hpLabel.innerText = `${hp} / ${maxHp}`;
         if (this.expLabel) this.expLabel.innerText = `EXP ${exp} / ${expToNextLevel}`;
         if (this.pointsLabel) this.pointsLabel.innerText = `PTS ${bonusStatPoints}`;
+        if (this.goldLabel) this.goldLabel.innerText = `${gold.toLocaleString()} mesos`;
 
         if (this.statLabels.hp) this.statLabels.hp.innerText = `${hp} / ${maxHp}`;
         if (this.statLabels.damage) this.statLabels.damage.innerText = String(attackDamage);
@@ -403,6 +408,28 @@ export class HudManager {
         });
         this.packWindow.appendChild(this.packDetails);
 
+        const footer = document.createElement("div");
+        Object.assign(footer.style, {
+            marginTop: "8px",
+            paddingTop: "8px",
+            borderTop: "1px solid #554433",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            color: "#ffe17a",
+        });
+
+        const goldTitle = document.createElement("span");
+        goldTitle.innerText = "Gold";
+        goldTitle.style.fontWeight = "bold";
+        footer.appendChild(goldTitle);
+
+        this.goldLabel = document.createElement("span");
+        this.goldLabel.innerText = "0 mesos";
+        footer.appendChild(this.goldLabel);
+
+        this.packWindow.appendChild(footer);
+
         this.renderPackWindow();
     }
 
@@ -573,7 +600,7 @@ export class HudManager {
         const inviteablePlayers = this.onlinePlayers.filter((player) => !memberIds.has(player.sessionId));
 
         this.partyStatus.innerText = isInParty
-            ? `Party ${this.partyState.partyId} | Members ${this.partyState.members.length}`
+            ? `Party ${this.partyState.partyId} | Members ${this.partyState.members.length} | Shared EXP/Gold`
             : "No active party.";
 
         this.createPartyButton.disabled = isInParty;

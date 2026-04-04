@@ -152,7 +152,8 @@ export class GameRoom extends Room<GameState> {
                 return;
             }
 
-            this.sendPartyNotice(client.sessionId, "info", "You joined the party.");
+            const joiningName = this.state.players.get(client.sessionId)?.name ?? "A player";
+            this.notifyPartyMembers(client.sessionId, `${joiningName} joined the party.`);
             this.broadcastPartyStates();
         });
 
@@ -185,6 +186,8 @@ export class GameRoom extends Room<GameState> {
         });
 
         this.onMessage("partyLeave", (client: Client) => {
+            const leavingName = this.state.players.get(client.sessionId)?.name ?? "A player";
+            const memberIds = this.partySystem.getPartyMemberIds(client.sessionId);
             const result = this.partySystem.leaveParty(client.sessionId);
             if (result.error) {
                 this.sendPartyNotice(client.sessionId, "error", result.error);
@@ -192,6 +195,11 @@ export class GameRoom extends Room<GameState> {
             }
 
             this.sendPartyNotice(client.sessionId, "info", "You left the party.");
+            memberIds
+                .filter((memberId) => memberId !== client.sessionId)
+                .forEach((memberId) => {
+                    this.sendPartyNotice(memberId, "info", `${leavingName} left the party.`);
+                });
             this.broadcastPartyStates();
         });
 
@@ -232,9 +240,16 @@ export class GameRoom extends Room<GameState> {
     onLeave(client: Client, _consented: boolean) {
         console.log(`[Room] ${client.sessionId} left`);
         this.combatSystem.clearTargetForAll(client.sessionId, this.state.players);
+        const leavingName = this.state.players.get(client.sessionId)?.name ?? "A player";
+        const memberIds = this.partySystem.getPartyMemberIds(client.sessionId);
         this.partySystem.handleDisconnect(client.sessionId);
         this.state.players.delete(client.sessionId);
         this.broadcast("playerLeft", { sessionId: client.sessionId });
+        memberIds
+            .filter((memberId) => memberId !== client.sessionId)
+            .forEach((memberId) => {
+                this.sendPartyNotice(memberId, "info", `${leavingName} disconnected.`);
+            });
         this.broadcastPartyStates();
     }
 
@@ -254,12 +269,14 @@ export class GameRoom extends Room<GameState> {
             const combatResult = this.combatSystem.processAutoAttacks(
                 this.state.players,
                 now,
-                this.physicsSystem,
-                this.statsSystem
+                this.physicsSystem
             );
 
             combatResult.events.forEach((evt) => this.broadcast("combatEvent", evt));
-            combatResult.died.forEach(({ sessionId }) => {
+            combatResult.died.forEach(({ sessionId, killerId, targetName, wasMob, expReward, goldReward }) => {
+                if (wasMob) {
+                    this.distributeMobRewards(killerId, targetName, expReward, goldReward);
+                }
                 this.combatSystem.clearTargetForAll(sessionId, this.state.players);
                 this.broadcast("playerDied", { sessionId });
             });
@@ -300,6 +317,7 @@ export class GameRoom extends Room<GameState> {
             exp: number;
             expToNextLevel: number;
             bonusStatPoints: number;
+            gold: number;
             str: number;
             agi: number;
             int: number;
@@ -328,6 +346,7 @@ export class GameRoom extends Room<GameState> {
                 level: player.level,
                 exp: player.exp,
                 expToNextLevel: player.expToNextLevel,
+                gold: player.gold,
                 bonusStatPoints: player.bonusStatPoints,
                 str: player.str,
                 agi: player.agi,
@@ -361,6 +380,71 @@ export class GameRoom extends Room<GameState> {
         const client = this.clients.find((candidate) => candidate.sessionId === sessionId);
         if (!client) return;
         client.send("partyNotice", { kind, message });
+    }
+
+    private notifyPartyMembers(memberId: string, message: string) {
+        const memberIds = this.partySystem.getPartyMemberIds(memberId);
+        memberIds.forEach((sessionId) => {
+            this.sendPartyNotice(sessionId, "info", message);
+        });
+    }
+
+    private distributeMobRewards(
+        killerId: string,
+        targetName: string,
+        expReward: number,
+        goldReward: number
+    ) {
+        const killer = this.state.players.get(killerId);
+        if (!killer || killer.isMob) return;
+
+        const recipients = this.partySystem.getRewardRecipients(
+            killerId,
+            this.state.players,
+            GameConfig.PARTY_SHARE_RANGE
+        );
+        if (recipients.length === 0) return;
+
+        const expShares = this.splitIntegerReward(expReward, recipients.length);
+        const goldShares = this.splitIntegerReward(goldReward, recipients.length);
+        const shared = recipients.length > 1;
+
+        recipients.forEach((sessionId, index) => {
+            const player = this.state.players.get(sessionId);
+            if (!player || player.isMob) return;
+
+            const expShare = expShares[index] ?? 0;
+            const goldShare = goldShares[index] ?? 0;
+
+            if (expShare > 0) {
+                this.statsSystem.grantExp(player, expShare);
+            }
+
+            if (goldShare > 0) {
+                this.statsSystem.grantGold(player, goldShare);
+            }
+
+            if (expShare > 0 || goldShare > 0) {
+                const parts: string[] = [];
+                if (expShare > 0) parts.push(`+${expShare} EXP`);
+                if (goldShare > 0) parts.push(`+${goldShare} gold`);
+                const suffix = shared ? " (party share)" : "";
+                this.sendPartyNotice(sessionId, "info", `${parts.join(" ")} from ${targetName}${suffix}.`);
+            }
+        });
+    }
+
+    private splitIntegerReward(total: number, recipients: number): number[] {
+        if (recipients <= 0 || total <= 0) return [];
+
+        const base = Math.floor(total / recipients);
+        let remainder = total % recipients;
+
+        return Array.from({ length: recipients }, () => {
+            const value = base + (remainder > 0 ? 1 : 0);
+            if (remainder > 0) remainder -= 1;
+            return value;
+        });
     }
 
     private tryAutoJumpToward(player: Player, targetX: number, targetY: number, now: number) {
