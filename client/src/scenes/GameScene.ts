@@ -227,7 +227,10 @@ export class GameScene extends Phaser.Scene {
         });
 
         // Ground click → move + clear auto-attack target
-        this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        this.input.on('pointerdown', (pointer: Phaser.Input.Pointer, currentlyOver: Phaser.GameObjects.GameObject[]) => {
+            // If we clicked on an interactive game object (like another player), ignore ground click
+            if (currentlyOver.length > 0) return;
+
             const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
             const cart  = this.isoToCart(world.x, world.y);
             this.room.send('move', { x: cart.x, y: cart.y });
