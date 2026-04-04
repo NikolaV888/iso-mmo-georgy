@@ -1,7 +1,12 @@
 import Phaser from "phaser";
 import * as Colyseus from "colyseus.js";
 import { HudManager } from "../ui/HudOverlay";
-import type { AllocatableStat, HudPlayerData } from "../ui/HudOverlay";
+import type {
+    AllocatableStat,
+    HudPlayerData,
+    OnlinePlayerData,
+    PartyStateData,
+} from "../ui/HudOverlay";
 
 interface EntitySnapshot extends HudPlayerData {
     name: string;
@@ -26,6 +31,11 @@ interface CombatEvent {
     damage: number;
     targetHp: number;
     effect: CombatEffect;
+}
+
+interface PartyNotice {
+    kind: "info" | "error";
+    message: string;
 }
 
 interface TrackedEntity {
@@ -65,12 +75,20 @@ export class GameScene extends Phaser.Scene {
     private room: Colyseus.Room | null = null;
     private hudManager: HudManager | null = null;
     private statusText: Phaser.GameObjects.Text | null = null;
+    private noticeText: Phaser.GameObjects.Text | null = null;
     private cursors: Phaser.Types.Input.Keyboard.CursorKeys | null = null;
+    private moveKeys: {
+        up: Phaser.Input.Keyboard.Key;
+        left: Phaser.Input.Keyboard.Key;
+        down: Phaser.Input.Keyboard.Key;
+        right: Phaser.Input.Keyboard.Key;
+    } | null = null;
 
     private readonly entities = new Map<string, TrackedEntity>();
     private mySessionId = "";
     private myTargetId = "";
     private isRoomActive = false;
+    private lastMoveInput = { x: 0, y: 0 };
 
     private chatWrapper: HTMLDivElement | null = null;
     private chatInput: HTMLInputElement | null = null;
@@ -107,7 +125,17 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
-        this.add.text(10, 36, "Enter chat | Space jump", {
+        this.noticeText = this.add.text(10, 62, "", {
+            fontSize: "11px",
+            color: "#ffe17a",
+            backgroundColor: "#00000066",
+            padding: { x: 8, y: 4 },
+        })
+            .setScrollFactor(0)
+            .setDepth(2000)
+            .setVisible(false);
+
+        this.add.text(10, 36, "Enter chat | WASD move | Space jump", {
             fontSize: "11px",
             color: "#88ffaa99",
             fontFamily: "monospace",
@@ -115,8 +143,28 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
-        this.hudManager = new HudManager((stat: AllocatableStat) => {
-            this.safeSend("allocateStat", { stat });
+        this.hudManager = new HudManager({
+            onAllocateStat: (stat: AllocatableStat) => {
+                this.safeSend("allocateStat", { stat });
+            },
+            onCreateParty: () => {
+                this.safeSend("partyCreate");
+            },
+            onInviteParty: (targetId: string) => {
+                this.safeSend("partyInvite", { targetId });
+            },
+            onKickParty: (targetId: string) => {
+                this.safeSend("partyKick", { targetId });
+            },
+            onLeaveParty: () => {
+                this.safeSend("partyLeave");
+            },
+            onAcceptPartyInvite: (partyId: string) => {
+                this.safeSend("partyAcceptInvite", { partyId });
+            },
+            onDeclinePartyInvite: (partyId: string) => {
+                this.safeSend("partyDeclineInvite", { partyId });
+            },
         });
 
         try {
@@ -126,6 +174,7 @@ export class GameScene extends Phaser.Scene {
             this.mySessionId = this.room.sessionId;
             this.isRoomActive = true;
             this.statusText.setText(`Connected ${this.room.sessionId.slice(0, 8)}`);
+            this.hudManager.setLocalSessionId(this.mySessionId);
         } catch (error) {
             const message = error instanceof Error ? error.message : "Could not connect to server";
             this.statusText?.setText(`Error: ${message}`);
@@ -140,6 +189,7 @@ export class GameScene extends Phaser.Scene {
 
     update() {
         this.panCamera();
+        this.syncMoveInput();
 
         this.entities.forEach((entity) => {
             const { snapshot } = entity;
@@ -174,6 +224,7 @@ export class GameScene extends Phaser.Scene {
 
         this.room.onMessage("init", (data: { sessionId: string }) => {
             this.mySessionId = data.sessionId;
+            this.hudManager?.setLocalSessionId(this.mySessionId);
         });
 
         this.room.onMessage("snapshot", (snapshot: Record<string, Partial<EntitySnapshot>>) => {
@@ -222,6 +273,14 @@ export class GameScene extends Phaser.Scene {
             const entity = this.entities.get(data.sessionId);
             if (entity) this.spawnChatBubble(entity, data.text);
         });
+
+        this.room.onMessage("partyState", (state: PartyStateData) => {
+            this.hudManager?.updatePartyState(state);
+        });
+
+        this.room.onMessage("partyNotice", (notice: PartyNotice) => {
+            this.showNotice(notice.message, notice.kind === "error" ? "#ff8a80" : "#ffe17a");
+        });
     }
 
     private registerInputHandlers() {
@@ -253,6 +312,17 @@ export class GameScene extends Phaser.Scene {
         );
 
         this.cursors = this.input.keyboard?.createCursorKeys() ?? null;
+        this.moveKeys = this.input.keyboard?.addKeys({
+            up: Phaser.Input.Keyboard.KeyCodes.W,
+            left: Phaser.Input.Keyboard.KeyCodes.A,
+            down: Phaser.Input.Keyboard.KeyCodes.S,
+            right: Phaser.Input.Keyboard.KeyCodes.D,
+        }) as {
+            up: Phaser.Input.Keyboard.Key;
+            left: Phaser.Input.Keyboard.Key;
+            down: Phaser.Input.Keyboard.Key;
+            right: Phaser.Input.Keyboard.Key;
+        } | null;
     }
 
     private panCamera() {
@@ -261,6 +331,26 @@ export class GameScene extends Phaser.Scene {
         if (this.cursors.right.isDown) this.cameras.main.scrollX += 5;
         if (this.cursors.up.isDown) this.cameras.main.scrollY -= 5;
         if (this.cursors.down.isDown) this.cameras.main.scrollY += 5;
+    }
+
+    private syncMoveInput() {
+        if (!this.moveKeys) return;
+
+        const x = (this.moveKeys.right.isDown ? 1 : 0) - (this.moveKeys.left.isDown ? 1 : 0);
+        const y = (this.moveKeys.down.isDown ? 1 : 0) - (this.moveKeys.up.isDown ? 1 : 0);
+
+        if (this.chatOpen) {
+            if (this.lastMoveInput.x !== 0 || this.lastMoveInput.y !== 0) {
+                this.lastMoveInput = { x: 0, y: 0 };
+                this.safeSend("moveInput", this.lastMoveInput);
+            }
+            return;
+        }
+
+        if (x === this.lastMoveInput.x && y === this.lastMoveInput.y) return;
+
+        this.lastMoveInput = { x, y };
+        this.safeSend("moveInput", this.lastMoveInput);
     }
 
     private handleSnapshot(snapshot: Record<string, Partial<EntitySnapshot>>) {
@@ -284,6 +374,7 @@ export class GameScene extends Phaser.Scene {
 
         const local = this.entities.get(this.mySessionId);
         if (local) this.hudManager?.updateLocalPlayer(local.snapshot);
+        this.hudManager?.updateOnlinePlayers(this.buildOnlinePlayerList());
     }
 
     private addEntity(sessionId: string, snapshot: EntitySnapshot) {
@@ -503,6 +594,41 @@ export class GameScene extends Phaser.Scene {
             duration: 900,
             ease: "Cubic.Out",
             onComplete: () => label.destroy(),
+        });
+    }
+
+    private buildOnlinePlayerList(): OnlinePlayerData[] {
+        const players: OnlinePlayerData[] = [];
+
+        this.entities.forEach((entity, sessionId) => {
+            if (entity.snapshot.isMob || sessionId === this.mySessionId) return;
+            players.push({
+                sessionId,
+                name: entity.snapshot.name,
+                level: entity.snapshot.level,
+            });
+        });
+
+        return players;
+    }
+
+    private showNotice(message: string, color: string) {
+        if (!this.noticeText) return;
+
+        this.noticeText.setText(message);
+        this.noticeText.setColor(color);
+        this.noticeText.setAlpha(1);
+        this.noticeText.setVisible(true);
+
+        this.tweens.killTweensOf(this.noticeText);
+        this.tweens.add({
+            targets: this.noticeText,
+            alpha: 0,
+            duration: 2200,
+            ease: "Quad.Out",
+            onComplete: () => {
+                this.noticeText?.setVisible(false);
+            },
         });
     }
 

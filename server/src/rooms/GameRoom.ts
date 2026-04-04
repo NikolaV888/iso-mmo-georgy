@@ -3,8 +3,10 @@ import { GameConfig } from "../config/GameConfig";
 import { CombatSystem } from "../systems/CombatSystem";
 import { MobSystem } from "../systems/MobSystem";
 import { MovementSystem } from "../systems/MovementSystem";
+import { PartySystem } from "../systems/PartySystem";
 import { PhysicsSystem } from "../systems/PhysicsSystem";
 import { AllocatableStat, StatsSystem } from "../systems/StatsSystem";
+import { TerrainSystem } from "../systems/TerrainSystem";
 import { GameState, Player } from "./schema/GameState";
 
 const TICK_MS = 1000 / GameConfig.TICK_RATE_HZ;
@@ -12,6 +14,11 @@ const BROADCAST_MS = 1000 / GameConfig.BROADCAST_RATE_HZ;
 
 function isAllocatableStat(value: unknown): value is AllocatableStat {
     return value === "str" || value === "agi" || value === "int" || value === "vit";
+}
+
+function clampInput(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.max(-1, Math.min(1, value));
 }
 
 export class GameRoom extends Room<GameState> {
@@ -22,6 +29,7 @@ export class GameRoom extends Room<GameState> {
     private physicsSystem = new PhysicsSystem();
     private mobSystem = new MobSystem();
     private statsSystem = new StatsSystem();
+    private partySystem = new PartySystem();
     private broadcastAccumulator = 0;
 
     onCreate(_options: unknown) {
@@ -33,9 +41,41 @@ export class GameRoom extends Room<GameState> {
             if (!player || player.isDead || player.isKnockedDown) return;
             if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
 
+            player.inputX = 0;
+            player.inputY = 0;
             player.targetX = data.x;
             player.targetY = data.y;
             player.combatTargetId = "";
+
+            this.tryAutoJumpToward(player, data.x, data.y, Date.now());
+        });
+
+        this.onMessage("moveInput", (client: Client, data: { x: number; y: number }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isDead || player.isKnockedDown) return;
+
+            const inputX = clampInput(data?.x);
+            const inputY = clampInput(data?.y);
+            const lengthSq = inputX * inputX + inputY * inputY;
+
+            if (lengthSq <= 0.0001) {
+                player.inputX = 0;
+                player.inputY = 0;
+                return;
+            }
+
+            player.inputX = inputX;
+            player.inputY = inputY;
+            player.targetX = player.x;
+            player.targetY = player.y;
+            player.combatTargetId = "";
+
+            this.tryAutoJumpToward(
+                player,
+                player.x + inputX * GameConfig.AUTO_JUMP_SCAN_DISTANCE,
+                player.y + inputY * GameConfig.AUTO_JUMP_SCAN_DISTANCE,
+                Date.now()
+            );
         });
 
         this.onMessage("jump", (client: Client) => {
@@ -66,6 +106,93 @@ export class GameRoom extends Room<GameState> {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isDead || !isAllocatableStat(data?.stat)) return;
             this.statsSystem.allocateStat(player, data.stat);
+        });
+
+        this.onMessage("partyCreate", (client: Client) => {
+            const result = this.partySystem.createParty(client.sessionId);
+            if (result.error) {
+                this.sendPartyNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendPartyNotice(client.sessionId, "info", "Party created.");
+            this.broadcastPartyStates();
+        });
+
+        this.onMessage("partyInvite", (client: Client, data: { targetId: string }) => {
+            if (typeof data?.targetId !== "string") return;
+
+            const result = this.partySystem.invitePlayer(
+                client.sessionId,
+                data.targetId,
+                this.state.players
+            );
+            if (result.error) {
+                this.sendPartyNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            const targetName = this.state.players.get(data.targetId)?.name ?? "Player";
+            const leaderName = this.state.players.get(client.sessionId)?.name ?? "Party Leader";
+            this.sendPartyNotice(client.sessionId, "info", `Invite sent to ${targetName}.`);
+            this.sendPartyNotice(
+                data.targetId,
+                "info",
+                `${leaderName} invited you to join their party.`
+            );
+            this.broadcastPartyStates();
+        });
+
+        this.onMessage("partyAcceptInvite", (client: Client, data: { partyId: string }) => {
+            if (typeof data?.partyId !== "string") return;
+
+            const result = this.partySystem.acceptInvite(client.sessionId, data.partyId);
+            if (result.error) {
+                this.sendPartyNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendPartyNotice(client.sessionId, "info", "You joined the party.");
+            this.broadcastPartyStates();
+        });
+
+        this.onMessage("partyDeclineInvite", (client: Client, data: { partyId: string }) => {
+            if (typeof data?.partyId !== "string") return;
+
+            const result = this.partySystem.declineInvite(client.sessionId, data.partyId);
+            if (result.error) {
+                this.sendPartyNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendPartyNotice(client.sessionId, "info", "Invite declined.");
+            this.broadcastPartyStates();
+        });
+
+        this.onMessage("partyKick", (client: Client, data: { targetId: string }) => {
+            if (typeof data?.targetId !== "string") return;
+
+            const result = this.partySystem.kickMember(client.sessionId, data.targetId);
+            if (result.error) {
+                this.sendPartyNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            const targetName = this.state.players.get(data.targetId)?.name ?? "Player";
+            this.sendPartyNotice(client.sessionId, "info", `${targetName} was removed from the party.`);
+            this.sendPartyNotice(data.targetId, "info", "You were removed from the party.");
+            this.broadcastPartyStates();
+        });
+
+        this.onMessage("partyLeave", (client: Client) => {
+            const result = this.partySystem.leaveParty(client.sessionId);
+            if (result.error) {
+                this.sendPartyNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendPartyNotice(client.sessionId, "info", "You left the party.");
+            this.broadcastPartyStates();
         });
 
         this.onMessage("chat", (client: Client, data: { text: string }) => {
@@ -99,13 +226,16 @@ export class GameRoom extends Room<GameState> {
         this.statsSystem.initializePlayer(player, `Player ${client.sessionId.slice(0, 4)}`);
         this.state.players.set(client.sessionId, player);
         client.send("init", { sessionId: client.sessionId });
+        this.sendPartyState(client);
     }
 
     onLeave(client: Client, _consented: boolean) {
         console.log(`[Room] ${client.sessionId} left`);
         this.combatSystem.clearTargetForAll(client.sessionId, this.state.players);
+        this.partySystem.handleDisconnect(client.sessionId);
         this.state.players.delete(client.sessionId);
         this.broadcast("playerLeft", { sessionId: client.sessionId });
+        this.broadcastPartyStates();
     }
 
     onDispose() {
@@ -118,7 +248,7 @@ export class GameRoom extends Room<GameState> {
 
             this.mobSystem.update(this.state.players, now, this.physicsSystem);
             this.combatSystem.syncChasingTargets(this.state.players);
-            this.movementSystem.update(this.state.players, deltaTime);
+            this.movementSystem.update(this.state.players, deltaTime, this.physicsSystem, now);
             this.physicsSystem.update(this.state.players, deltaTime, now);
 
             const combatResult = this.combatSystem.processAutoAttacks(
@@ -150,6 +280,7 @@ export class GameRoom extends Room<GameState> {
             if (this.broadcastAccumulator >= BROADCAST_MS) {
                 this.broadcastAccumulator = 0;
                 this.broadcastSnapshot();
+                this.broadcastPartyStates();
             }
         } catch (error) {
             console.error(`[Room ${this.roomId}] update failed`, error);
@@ -216,6 +347,45 @@ export class GameRoom extends Room<GameState> {
         });
 
         this.broadcast("snapshot", snapshot);
+    }
+
+    private broadcastPartyStates() {
+        this.clients.forEach((client) => this.sendPartyState(client));
+    }
+
+    private sendPartyState(client: Client) {
+        client.send("partyState", this.partySystem.getPartyStateFor(client.sessionId, this.state.players));
+    }
+
+    private sendPartyNotice(sessionId: string, kind: "info" | "error", message: string) {
+        const client = this.clients.find((candidate) => candidate.sessionId === sessionId);
+        if (!client) return;
+        client.send("partyNotice", { kind, message });
+    }
+
+    private tryAutoJumpToward(player: Player, targetX: number, targetY: number, now: number) {
+        if (player.isDead || player.isKnockedDown || player.canFly || !player.isGrounded) return;
+
+        const dx = targetX - player.x;
+        const dy = targetY - player.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < 0.1 || distance > GameConfig.AUTO_JUMP_TARGET_DISTANCE) return;
+
+        const scanDistance = Math.min(distance, GameConfig.AUTO_JUMP_SCAN_DISTANCE);
+        const scanX = TerrainSystem.clampCoordinate(player.x + (dx / distance) * scanDistance);
+        const scanY = TerrainSystem.clampCoordinate(player.y + (dy / distance) * scanDistance);
+        const currentGround = TerrainSystem.getGroundHeight(player.x, player.y);
+        const targetGround = TerrainSystem.getGroundHeight(scanX, scanY);
+        const ascent = targetGround - currentGround;
+
+        if (
+            ascent < GameConfig.AUTO_JUMP_MIN_ASCENT ||
+            ascent > GameConfig.AUTO_JUMP_MAX_ASCENT
+        ) {
+            return;
+        }
+
+        this.physicsSystem.jump(player, GameConfig.PLAYER_JUMP_SPEED, now);
     }
 
     private spawnDebugMobs() {

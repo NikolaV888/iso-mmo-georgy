@@ -62,6 +62,8 @@ export class Player extends Schema {
     lastAiActionAt: number = 0;
     aiSeed: number = Math.random() * Math.PI * 2;
     hoverPhaseOffset: number = Math.random() * 1000;
+    inputX: number = 0;
+    inputY: number = 0;
 }
 
 export class GameState extends Schema {
