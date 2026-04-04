@@ -23,27 +23,36 @@ export class GameRoom extends Room<GameState> {
          * Move — clears combat target so walking away stops the auto-attack loop.
          * In the future a "chase-to-attack" mode can re-engage when in range.
          */
-        this.onMessage("move", (client: Client, data: { x: number; y: number }) => {
-            const player = this.state.players.get(client.sessionId);
-            if (!player || player.isDead) return;
-            player.targetX = data.x;
-            player.targetY = data.y;
-            // Clicking the ground disengages auto-attack
-            player.combatTargetId = "";
+        this.onMessage("move", (client: Client, data: { x: number; y: number } | undefined) => {
+            try {
+                if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
+                const player = this.state.players.get(client.sessionId);
+                if (!player || player.isDead) return;
+                player.targetX = data.x || 0;
+                player.targetY = data.y || 0;
+                player.combatTargetId = "";
+            } catch (e) {
+                console.error("[Move] Error:", e);
+            }
         });
 
         /**
          * setTarget — lock an auto-attack target.
          * Clicking an enemy calls this; the server loop does the rest.
          */
-        this.onMessage("setTarget", (client: Client, data: { targetId: string }) => {
-            const player = this.state.players.get(client.sessionId);
-            if (!player || player.isDead) return;
+        this.onMessage("setTarget", (client: Client, data: { targetId: string } | undefined) => {
+            try {
+                if (!data || typeof data.targetId !== 'string') return;
+                const player = this.state.players.get(client.sessionId);
+                if (!player || player.isDead) return;
 
-            const target = this.state.players.get(data.targetId);
-            if (!target || target.isDead) return;
+                const target = this.state.players.get(data.targetId);
+                if (!target || target.isDead) return;
 
-            player.combatTargetId = data.targetId;
+                player.combatTargetId = data.targetId;
+            } catch (e) {
+                console.error("[setTarget] Error:", e);
+            }
         });
 
         /**
@@ -57,21 +66,30 @@ export class GameRoom extends Room<GameState> {
         /**
          * Proximity chat — send only to players within CHAT_RANGE tiles.
          */
-        this.onMessage("chat", (client: Client, data: { text: string }) => {
-            const sender = this.state.players.get(client.sessionId);
-            if (!sender) return;
-            const text = String(data.text ?? "").trim().slice(0, GameConfig.CHAT_MAX_LENGTH);
-            if (!text) return;
+        this.onMessage("chat", (client: Client, data: { text: string } | undefined) => {
+            try {
+                if (!data || typeof data.text !== 'string') return;
+                const sender = this.state.players.get(client.sessionId);
+                if (!sender) return;
+                const text = String(data.text).trim().slice(0, GameConfig.CHAT_MAX_LENGTH);
+                if (!text) return;
 
-            this.clients.forEach((c) => {
-                const other = this.state.players.get(c.sessionId);
-                if (!other) return;
-                const dx = other.x - sender.x;
-                const dy = other.y - sender.y;
-                if (Math.sqrt(dx * dx + dy * dy) <= GameConfig.CHAT_RANGE) {
-                    c.send("chatMessage", { sessionId: client.sessionId, text });
-                }
-            });
+                this.clients.forEach((c) => {
+                    const other = this.state.players.get(c.sessionId);
+                    if (!other) return;
+                    const dx = other.x - sender.x;
+                    const dy = other.y - sender.y;
+                    if (Math.sqrt(dx * dx + dy * dy) <= GameConfig.CHAT_RANGE) {
+                        try {
+                            c.send("chatMessage", { sessionId: client.sessionId, text });
+                        } catch (sendErr) {
+                            console.error(`[Chat] Failed sending to ${c.sessionId}:`, sendErr);
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("[Chat] Error:", e);
+            }
         });
 
         // ── Game loop ────────────────────────────────────────────────────
