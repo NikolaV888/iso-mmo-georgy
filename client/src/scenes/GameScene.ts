@@ -75,6 +75,9 @@ export class GameScene extends Phaser.Scene {
         // Centre camera on middle of 20×20 grid
         const centre = this.cartToIso(10, 10);
         this.cameras.main.centerOn(centre.x, centre.y);
+        
+        // Setup fixed zoom so the graphics don't appear tiny on large high-res monitors
+        this.cameras.main.setZoom(1.5);
 
         // HUD status label (fixed to camera)
         const statusText = this.add
