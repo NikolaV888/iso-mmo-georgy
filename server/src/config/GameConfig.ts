@@ -22,6 +22,15 @@ export const GameConfig = {
                                        // Future: modified by AGI, weapon type, buffs.
                                        // Cooldown (ms) = 1000 / attackSpeed
 
+    // --- RPG Stats Base ---
+    PLAYER_BASE_LEVEL: 1,
+    PLAYER_BASE_EXP: 0,
+    PLAYER_BASE_STR: 5,         // Affects physical damage / encumbrance
+    PLAYER_BASE_AGI: 5,         // Affects attack speed / evasion
+    PLAYER_BASE_INT: 5,         // Affects magic damage / MP
+    PLAYER_BASE_VIT: 5,         // Affects MAX HP / regen
+
+
     // --- Death & Respawn ---
     RESPAWN_DELAY_MS: 3000,
 

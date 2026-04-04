@@ -20,6 +20,13 @@ export class Player extends Schema {
     @type("string") combatTargetId: string = "";
 
     // ── Stats (base values — will be modified by equipment/buffs later) ──
+    @type("number") level: number        = 1;
+    @type("number") exp: number          = 0;
+    @type("number") str: number          = 5;
+    @type("number") agi: number          = 5;
+    @type("number") int: number          = 5;
+    @type("number") vit: number          = 5;
+
     @type("number") hp: number           = 100;
     @type("number") maxHp: number        = 100;
     @type("number") attackDamage: number = 15;

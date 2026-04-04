@@ -85,6 +85,14 @@ export class GameRoom extends Room<GameState> {
         player.y            = GameConfig.SPAWN_Y;
         player.targetX      = GameConfig.SPAWN_X;
         player.targetY      = GameConfig.SPAWN_Y;
+        
+        player.level        = GameConfig.PLAYER_BASE_LEVEL;
+        player.exp          = GameConfig.PLAYER_BASE_EXP;
+        player.str          = GameConfig.PLAYER_BASE_STR;
+        player.agi          = GameConfig.PLAYER_BASE_AGI;
+        player.int          = GameConfig.PLAYER_BASE_INT;
+        player.vit          = GameConfig.PLAYER_BASE_VIT;
+        
         player.hp           = GameConfig.PLAYER_MAX_HP;
         player.maxHp        = GameConfig.PLAYER_MAX_HP;
         player.attackDamage = GameConfig.PLAYER_ATTACK_DAMAGE;
@@ -141,6 +149,9 @@ export class GameRoom extends Room<GameState> {
     private broadcastSnapshot() {
         const snapshot: Record<string, {
             x: number; y: number;
+            level: number; exp: number;
+            str: number; agi: number; int: number; vit: number;
+            attackDamage: number; attackSpeed: number;
             hp: number; maxHp: number;
             isDead: boolean;
             combatTargetId: string;
@@ -150,6 +161,14 @@ export class GameRoom extends Room<GameState> {
             snapshot[sid] = {
                 x:              p.x,
                 y:              p.y,
+                level:          p.level,
+                exp:            p.exp,
+                str:            p.str,
+                agi:            p.agi,
+                int:            p.int,
+                vit:            p.vit,
+                attackDamage:   p.attackDamage,
+                attackSpeed:    p.attackSpeed,
                 hp:             p.hp,
                 maxHp:          p.maxHp,
                 isDead:         p.isDead,

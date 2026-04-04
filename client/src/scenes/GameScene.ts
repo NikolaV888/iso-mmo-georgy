@@ -8,6 +8,14 @@ interface PlayerSnapshot {
     y: number;
     hp: number;
     maxHp: number;
+    level: number;
+    exp: number;
+    str: number;
+    agi: number;
+    int: number;
+    vit: number;
+    attackDamage: number;
+    attackSpeed: number;
     isDead: boolean;
     combatTargetId: string;
 }
@@ -40,6 +48,7 @@ interface TrackedPlayer {
 }
 
 // ── Scene ────────────────────────────────────────────────────────────────────
+import { HudManager } from '../ui/HudOverlay';
 
 export class GameScene extends Phaser.Scene {
     // Network
@@ -51,6 +60,9 @@ export class GameScene extends Phaser.Scene {
     private players: Map<string, TrackedPlayer> = new Map();
     /** sessionId of the local player's current auto-attack target */
     private myTargetId: string = '';
+
+    // UI
+    private hudManager!: HudManager;
 
     // Chat
     private chatInput: HTMLInputElement | null = null;
@@ -100,6 +112,8 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
+        // Initialize HUD
+        this.hudManager = new HudManager();
 
         // ── Connect to Colyseus ───────────────────────────────────────────
         const serverUrl =
@@ -160,6 +174,12 @@ export class GameScene extends Phaser.Scene {
                             const tgt = this.players.get(newTarget);
                             if (tgt) this.updateTargetRing(tgt, true);
                         }
+                    }
+
+                    // Sync HUD with local player's data from this snapshot
+                    const localSnap = snap[this.mySessionId];
+                    if (localSnap) {
+                        this.hudManager.updateLocalPlayer(localSnap);
                     }
                 }
                 // Remove players no longer in snapshot

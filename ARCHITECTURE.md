@@ -11,6 +11,15 @@
 
 ---
 
+## 📋 Up Next
+- [ ] Basic NPC enemies (server-side, auto-aggro)
+- [ ] Supabase integration — player accounts + auth
+- [ ] Persistent character saves (position, hp, stats)
+- [ ] Player name labels above heads
+- [ ] Tile-based map definition (JSON map file)
+
+---
+
 ## Core Design Principles
 
 ### Server Authoritative
@@ -53,6 +62,15 @@ server/src/
     └── CombatSystem.ts       # Attack validation, damage, death, respawn
 ```
 
+### 🔥 Current Sprint
+- [x] Modular systems architecture (MovementSystem, CombatSystem)
+- [x] Health & damage
+- [x] Click-to-auto-attack (Server-authoritative)
+- [x] Death & respawn
+- [x] HTML/DOM based HUD overlay (Stats Window, Bottom Action Bar)
+- [x] RPG Core Stats schema (Level, Exp, Str, Agi, Int, Vit)
+- [ ] Implement stat assignment (+ buttons on level up)
+
 ### Systems Pattern
 Each `System` has an `update(state, deltaTime)` method. `GameRoom` calls them in order each tick. Adding a new system (e.g. `ZoneSystem`, `SpawnSystem`) = create a new file, import it in `GameRoom`, call it in the loop.
 
@@ -66,15 +84,16 @@ Each `System` has an `update(state, deltaTime)` method. `GameRoom` calls them in
 ```
 client/src/
 ├── main.ts                   # Phaser Game bootstrap
-└── scenes/
-    └── GameScene.ts          # Main scene: rendering, input, network events
+├── scenes/
+│   └── GameScene.ts          # Main scene: rendering, input, network events
+└── ui/
+    └── HudOverlay.ts         # Pure DOM manager for persistent UI (Stats, Bottom Bar)
 ```
 
-### Rendering Model
-- All coordinates internally are **Cartesian** (tile units, float)
-- Conversion to screen: `cartToIso(x, y)` → screen pixels
-- Depth sorting: `depth = x + y` (higher = rendered on top)
-- Each player = Phaser `Container` with: shadow ellipse, body rect, head circle, health bar graphics
+### Rendering & UI Model
+- **World:** Drawn by Phaser onto the `<canvas>`.
+- **Coordinates:** Cartesian internally, converted to screen via `cartToIso(x, y)`.
+- **UI System:** Classic MMO windows (Stats) and floating elements (Chat input) are implemented as standard **HTML/CSS `div`s** absolutely positioned over the canvas with `z-index: 1000`. This is much easier to maintain than Phaser text containers. `GameScene` passes snapshot data to `HudManager` to keep the DOM in sync.
 
 ### Click Resolution
 1. Player containers are interactive (`setInteractive`)  

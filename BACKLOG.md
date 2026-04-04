@@ -16,21 +16,19 @@ Legend: `[x]` done · `[/]` in progress · `[ ]` todo · `[~]` icebox
 ---
 
 ## 🔥 Current Sprint
-- [/] Modular systems architecture (MovementSystem, CombatSystem)
-- [/] Health & damage
-- [/] Click-to-attack
-- [/] Death & respawn
-- [/] Health bars above players
-- [/] Floating damage numbers
-- [/] Consistent movement speed in all directions
+- [x] Modular systems architecture (MovementSystem, CombatSystem)
+- [x] Health & damage
+- [x] Click-to-auto-attack
+- [x] Death & respawn
+- [x] Stats Window & HTML UI overlay
+- [x] Chat system (proximity speech bubbles)
+- [ ] Basic NPC enemies (server-side, auto-aggro)
+- [ ] Supabase integration — player accounts + auth
 
 ---
 
 ## 📋 Up Next
-- [ ] Basic NPC enemies (server-side, auto-aggro)
-- [ ] Supabase integration — player accounts + auth
-- [ ] Persistent character saves (position, hp)
-- [ ] Chat system (proximity or global)
+- [ ] Persistent character saves (position, hp, stats)
 - [ ] Player name labels above heads
 - [ ] Tile-based map definition (JSON map file)
 
