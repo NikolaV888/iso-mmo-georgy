@@ -55,6 +55,7 @@ export class GameScene extends Phaser.Scene {
     private client!: Colyseus.Client;
     private room!: Colyseus.Room;
     private mySessionId: string = '';
+    private isRoomActive: boolean = false;
 
     // State
     private players: Map<string, TrackedPlayer> = new Map();
@@ -125,6 +126,7 @@ export class GameScene extends Phaser.Scene {
             // Set immediately — don't wait for 'init' message to avoid a race
             // where the first snapshot arrives before the init message is processed.
             this.mySessionId = this.room.sessionId;
+            this.isRoomActive = true;
             statusText.setText(`✓ ${this.room.sessionId}`);
         } catch (e) {
             statusText.setText('✗ Could not connect to server');
@@ -133,11 +135,13 @@ export class GameScene extends Phaser.Scene {
         }
 
         this.room.onError((code, message) => {
+            this.isRoomActive = false;
             statusText.setText(`✗ Room error ${code}`);
             console.error('[Room error]', code, message);
         });
 
         this.room.onLeave((code) => {
+            this.isRoomActive = false;
             statusText.setText(`✗ Disconnected (${code})`);
             console.error('[Room leave]', code);
         });
@@ -266,7 +270,7 @@ export class GameScene extends Phaser.Scene {
 
             const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
             const cart  = this.isoToCart(world.x, world.y);
-            this.room.send('move', { x: cart.x, y: cart.y });
+            this.safeSend('move', { x: cart.x, y: cart.y });
             this.spawnClickRipple(world.x, world.y);
         });
 
@@ -331,7 +335,7 @@ export class GameScene extends Phaser.Scene {
             pointer.event.stopPropagation();
             const isEnemy = sessionId !== this.mySessionId;
             if (isEnemy && this.room && !data.isDead) {
-                this.room.send('setTarget', { targetId: sessionId });
+                this.safeSend('setTarget', { targetId: sessionId });
             }
         });
         // Highlight on hover for enemy players
@@ -581,7 +585,7 @@ export class GameScene extends Phaser.Scene {
             if (e.key === 'Enter') {
                 const text = input.value.trim();
                 if (text && this.room) {
-                    this.room.send('chat', { text });
+                    this.safeSend('chat', { text });
                 }
                 this.closeChat();
             } else if (e.key === 'Escape') {
@@ -615,6 +619,17 @@ export class GameScene extends Phaser.Scene {
         wrapper.style.display = 'none';
         this.chatInput.blur();
         if (this.input.keyboard) this.input.keyboard.enabled = true;
+    }
+
+    private safeSend(type: string, payload: unknown) {
+        if (!this.room || !this.isRoomActive) return;
+
+        try {
+            this.room.send(type, payload);
+        } catch (error) {
+            this.isRoomActive = false;
+            console.error(`[Send failed] ${type}`, error);
+        }
     }
 
     // ── Iso math ─────────────────────────────────────────────────────────────

@@ -122,33 +122,37 @@ export class GameRoom extends Room<GameState> {
     // ── Private ──────────────────────────────────────────────────────────────
 
     private update(deltaTime: number) {
-        const now = Date.now();
+        try {
+            const now = Date.now();
 
-        // 1. Keep attackers walking into range, then move everyone.
-        this.combatSystem.syncChasingTargets(this.state.players);
-        this.movementSystem.update(this.state.players, deltaTime);
+            // 1. Keep attackers walking into range, then move everyone.
+            this.combatSystem.syncChasingTargets(this.state.players);
+            this.movementSystem.update(this.state.players, deltaTime);
 
-        // 2. Auto-attacks
-        const combatResult = this.combatSystem.processAutoAttacks(this.state.players, now);
-        combatResult.events.forEach(evt  => this.broadcast("combatEvent", evt));
-        combatResult.died.forEach(sid    => {
-            // Clear everyone targeting the dead player
-            this.combatSystem.clearTargetForAll(sid, this.state.players);
-            this.broadcast("playerDied", { sessionId: sid });
-        });
+            // 2. Auto-attacks
+            const combatResult = this.combatSystem.processAutoAttacks(this.state.players, now);
+            combatResult.events.forEach(evt  => this.broadcast("combatEvent", evt));
+            combatResult.died.forEach(sid    => {
+                // Clear everyone targeting the dead player
+                this.combatSystem.clearTargetForAll(sid, this.state.players);
+                this.broadcast("playerDied", { sessionId: sid });
+            });
 
-        // 3. Respawns
-        const respawned = this.combatSystem.processRespawns(this.state.players, now);
-        respawned.forEach(sid => {
-            const p = this.state.players.get(sid);
-            if (p) this.broadcast("playerRespawned", { sessionId: sid, x: p.x, y: p.y });
-        });
+            // 3. Respawns
+            const respawned = this.combatSystem.processRespawns(this.state.players, now);
+            respawned.forEach(sid => {
+                const p = this.state.players.get(sid);
+                if (p) this.broadcast("playerRespawned", { sessionId: sid, x: p.x, y: p.y });
+            });
 
-        // 4. Snapshot broadcast at BROADCAST_RATE_HZ
-        this.broadcastAccumulator += deltaTime;
-        if (this.broadcastAccumulator >= BROADCAST_MS) {
-            this.broadcastAccumulator = 0;
-            this.broadcastSnapshot();
+            // 4. Snapshot broadcast at BROADCAST_RATE_HZ
+            this.broadcastAccumulator += deltaTime;
+            if (this.broadcastAccumulator >= BROADCAST_MS) {
+                this.broadcastAccumulator = 0;
+                this.broadcastSnapshot();
+            }
+        } catch (error) {
+            console.error(`[Room ${this.roomId}] update failed`, error);
         }
     }
 

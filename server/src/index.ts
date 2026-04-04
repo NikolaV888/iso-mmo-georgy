@@ -19,6 +19,14 @@ const gameServer = new Server({
 
 gameServer.define("game_room", GameRoom);
 
+process.on("uncaughtException", (error) => {
+    console.error("[GameServer] uncaughtException", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+    console.error("[GameServer] unhandledRejection", reason);
+});
+
 gameServer.listen(port).then(() => {
     console.log(`[GameServer] Listening on http://localhost:${port}`);
 });
