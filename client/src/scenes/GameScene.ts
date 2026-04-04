@@ -94,8 +94,7 @@ export class GameScene extends Phaser.Scene {
         this.cameras.main.setBackgroundColor("#1a1a2e");
         this.drawGrid();
 
-        const centerGround = this.getGroundHeight(10, 10);
-        const center = this.pointToWorld(10, 10, centerGround);
+        const center = this.pointToWorld(10, 10, 0);
         this.cameras.main.centerOn(center.x, center.y);
         this.cameras.main.setZoom(1.5);
 
@@ -144,7 +143,7 @@ export class GameScene extends Phaser.Scene {
 
         this.entities.forEach((entity) => {
             const { snapshot } = entity;
-            const ground = this.pointToWorld(snapshot.x, snapshot.y, snapshot.groundZ);
+            const ground = this.pointToWorld(snapshot.x, snapshot.y, 0);
             entity.container.x += (ground.x - entity.container.x) * 0.25;
             entity.container.y += (ground.y - entity.container.y) * 0.25;
 
@@ -152,7 +151,7 @@ export class GameScene extends Phaser.Scene {
             const targetArtY = -this.heightToScreen(airHeight);
             entity.art.y += (targetArtY - entity.art.y) * 0.25;
 
-            entity.container.setDepth(snapshot.x + snapshot.y + snapshot.groundZ * 0.1);
+            entity.container.setDepth(snapshot.x + snapshot.y);
             entity.shadow.setScale(airHeight > 0.05 ? 0.82 : 1);
             entity.shadow.setAlpha(snapshot.isDead ? 0.14 : airHeight > 0.05 ? 0.2 : 0.4);
         });
@@ -177,7 +176,7 @@ export class GameScene extends Phaser.Scene {
             this.mySessionId = data.sessionId;
         });
 
-        this.room.onMessage("snapshot", (snapshot: Record<string, EntitySnapshot>) => {
+        this.room.onMessage("snapshot", (snapshot: Record<string, Partial<EntitySnapshot>>) => {
             this.handleSnapshot(snapshot);
         });
 
@@ -246,8 +245,7 @@ export class GameScene extends Phaser.Scene {
 
                 const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
                 const cart = this.screenToGroundCart(world.x, world.y);
-                const groundZ = this.getGroundHeight(cart.x, cart.y);
-                const ripple = this.pointToWorld(cart.x, cart.y, groundZ);
+                const ripple = this.pointToWorld(cart.x, cart.y, 0);
 
                 this.safeSend("move", { x: cart.x, y: cart.y });
                 this.spawnClickRipple(ripple.x, ripple.y);
@@ -265,9 +263,10 @@ export class GameScene extends Phaser.Scene {
         if (this.cursors.down.isDown) this.cameras.main.scrollY += 5;
     }
 
-    private handleSnapshot(snapshot: Record<string, EntitySnapshot>) {
-        Object.entries(snapshot).forEach(([sessionId, data]) => {
+    private handleSnapshot(snapshot: Record<string, Partial<EntitySnapshot>>) {
+        Object.entries(snapshot).forEach(([sessionId, rawData]) => {
             const existing = this.entities.get(sessionId);
+            const data = this.normalizeSnapshot(rawData, existing?.snapshot);
             if (!existing) {
                 this.addEntity(sessionId, data);
                 return;
@@ -283,15 +282,13 @@ export class GameScene extends Phaser.Scene {
 
         this.syncLocalTargetRing();
 
-        if (this.mySessionId) {
-            const local = snapshot[this.mySessionId];
-            if (local) this.hudManager?.updateLocalPlayer(local);
-        }
+        const local = this.entities.get(this.mySessionId);
+        if (local) this.hudManager?.updateLocalPlayer(local.snapshot);
     }
 
     private addEntity(sessionId: string, snapshot: EntitySnapshot) {
         const palette = this.getEntityPalette(snapshot, sessionId, false);
-        const ground = this.pointToWorld(snapshot.x, snapshot.y, snapshot.groundZ);
+        const ground = this.pointToWorld(snapshot.x, snapshot.y, 0);
 
         const shadow = this.add.ellipse(0, 4, 24, 11, 0x000000, 0.4);
         const body = this.add.rectangle(0, -18, 14, 22, palette.fill);
@@ -303,7 +300,7 @@ export class GameScene extends Phaser.Scene {
         const healthBar = this.add.graphics();
         const art = this.add.container(0, 0, [body, head, headRing, healthBar]);
         const container = this.add.container(ground.x, ground.y, [shadow, art]);
-        container.setDepth(snapshot.x + snapshot.y + snapshot.groundZ * 0.1);
+        container.setDepth(snapshot.x + snapshot.y);
 
         const tracked: TrackedEntity = {
             sessionId,
@@ -767,14 +764,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     private screenToGroundCart(worldX: number, worldY: number) {
-        let guess = this.isoToCart(worldX, worldY);
-
-        for (let i = 0; i < 3; i += 1) {
-            const groundZ = this.getGroundHeight(guess.x, guess.y);
-            guess = this.isoToCart(worldX, worldY + this.heightToScreen(groundZ));
-        }
-
-        return guess;
+        return this.isoToCart(worldX, worldY);
     }
 
     private heightToScreen(height: number): number {
@@ -798,27 +788,13 @@ export class GameScene extends Phaser.Scene {
 
         for (let row = 0; row < this.worldSize; row += 1) {
             for (let col = 0; col < this.worldSize; col += 1) {
-                const tl = this.pointToWorld(col, row, this.getGroundHeight(col, row));
-                const tr = this.pointToWorld(col + 1, row, this.getGroundHeight(col + 1, row));
-                const br = this.pointToWorld(col + 1, row + 1, this.getGroundHeight(col + 1, row + 1));
-                const bl = this.pointToWorld(col, row + 1, this.getGroundHeight(col, row + 1));
-
-                const averageHeight = (
-                    this.getGroundHeight(col, row) +
-                    this.getGroundHeight(col + 1, row) +
-                    this.getGroundHeight(col + 1, row + 1) +
-                    this.getGroundHeight(col, row + 1)
-                ) / 4;
-
+                const tl = this.pointToWorld(col, row, 0);
+                const tr = this.pointToWorld(col + 1, row, 0);
+                const br = this.pointToWorld(col + 1, row + 1, 0);
+                const bl = this.pointToWorld(col, row + 1, 0);
                 const even = (row + col) % 2 === 0;
-                const base = even ? { r: 22, g: 60, b: 26 } : { r: 18, g: 49, b: 23 };
-                const lift = Math.round(averageHeight * 18);
-                const fill = Phaser.Display.Color.GetColor(
-                    Phaser.Math.Clamp(base.r + lift, 0, 255),
-                    Phaser.Math.Clamp(base.g + lift, 0, 255),
-                    Phaser.Math.Clamp(base.b + lift, 0, 255)
-                );
-                const edge = Phaser.Display.Color.GetColor(42, 110 + Math.round(averageHeight * 20), 52);
+                const fill = even ? 0x1e3a1e : 0x172d17;
+                const edge = 0x2d6a2d;
 
                 const points = [
                     { x: tl.x, y: tl.y },
@@ -833,5 +809,82 @@ export class GameScene extends Phaser.Scene {
                 graphics.strokePoints(points, true);
             }
         }
+    }
+
+    private normalizeSnapshot(
+        incoming: Partial<EntitySnapshot>,
+        previous?: EntitySnapshot
+    ): EntitySnapshot {
+        const fallback = previous ?? this.createDefaultSnapshot();
+
+        return {
+            name: this.readString(incoming.name, fallback.name),
+            isMob: this.readBoolean(incoming.isMob, fallback.isMob),
+            mobKind: this.readString(incoming.mobKind, fallback.mobKind),
+            x: this.readNumber(incoming.x, fallback.x),
+            y: this.readNumber(incoming.y, fallback.y),
+            z: this.readNumber(incoming.z, fallback.z),
+            groundZ: this.readNumber(incoming.groundZ, fallback.groundZ),
+            level: this.readNumber(incoming.level, fallback.level),
+            exp: this.readNumber(incoming.exp, fallback.exp),
+            expToNextLevel: this.readNumber(incoming.expToNextLevel, fallback.expToNextLevel),
+            bonusStatPoints: this.readNumber(incoming.bonusStatPoints, fallback.bonusStatPoints),
+            str: this.readNumber(incoming.str, fallback.str),
+            agi: this.readNumber(incoming.agi, fallback.agi),
+            int: this.readNumber(incoming.int, fallback.int),
+            vit: this.readNumber(incoming.vit, fallback.vit),
+            attackDamage: this.readNumber(incoming.attackDamage, fallback.attackDamage),
+            attackSpeed: this.readNumber(incoming.attackSpeed, fallback.attackSpeed),
+            moveSpeed: this.readNumber(incoming.moveSpeed, fallback.moveSpeed),
+            hp: this.readNumber(incoming.hp, fallback.hp),
+            maxHp: this.readNumber(incoming.maxHp, fallback.maxHp),
+            isDead: this.readBoolean(incoming.isDead, fallback.isDead),
+            isGrounded: this.readBoolean(incoming.isGrounded, fallback.isGrounded),
+            isFlying: this.readBoolean(incoming.isFlying, fallback.isFlying),
+            isKnockedDown: this.readBoolean(incoming.isKnockedDown, fallback.isKnockedDown),
+            combatTargetId: this.readString(incoming.combatTargetId, fallback.combatTargetId),
+        };
+    }
+
+    private createDefaultSnapshot(): EntitySnapshot {
+        return {
+            name: "Player",
+            isMob: false,
+            mobKind: "",
+            x: 0,
+            y: 0,
+            z: 0,
+            groundZ: 0,
+            level: 1,
+            exp: 0,
+            expToNextLevel: 35,
+            bonusStatPoints: 0,
+            str: 5,
+            agi: 5,
+            int: 5,
+            vit: 5,
+            attackDamage: 0,
+            attackSpeed: 0,
+            moveSpeed: 0,
+            hp: 100,
+            maxHp: 100,
+            isDead: false,
+            isGrounded: true,
+            isFlying: false,
+            isKnockedDown: false,
+            combatTargetId: "",
+        };
+    }
+
+    private readNumber(value: unknown, fallback: number): number {
+        return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+    }
+
+    private readBoolean(value: unknown, fallback: boolean): boolean {
+        return typeof value === "boolean" ? value : fallback;
+    }
+
+    private readString(value: unknown, fallback: string): string {
+        return typeof value === "string" ? value : fallback;
     }
 }

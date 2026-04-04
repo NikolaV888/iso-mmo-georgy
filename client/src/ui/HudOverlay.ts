@@ -68,25 +68,40 @@ export class HudManager {
         this.statButtons = {};
     }
 
-    public updateLocalPlayer(player: HudPlayerData) {
-        if (this.nameLabel) this.nameLabel.innerText = player.name;
-        if (this.levelLabel) this.levelLabel.innerText = `Lv. ${player.level}`;
-        if (this.hpLabel) this.hpLabel.innerText = `${player.hp} / ${player.maxHp}`;
-        if (this.expLabel) this.expLabel.innerText = `EXP ${player.exp} / ${player.expToNextLevel}`;
-        if (this.pointsLabel) this.pointsLabel.innerText = `PTS ${player.bonusStatPoints}`;
+    public updateLocalPlayer(player: Partial<HudPlayerData>) {
+        const name = this.readString(player.name, "Player");
+        const level = this.readNumber(player.level, 1);
+        const exp = this.readNumber(player.exp, 0);
+        const expToNextLevel = this.readNumber(player.expToNextLevel, 35);
+        const bonusStatPoints = this.readNumber(player.bonusStatPoints, 0);
+        const hp = this.readNumber(player.hp, 100);
+        const maxHp = this.readNumber(player.maxHp, 100);
+        const str = this.readNumber(player.str, 0);
+        const agi = this.readNumber(player.agi, 0);
+        const int = this.readNumber(player.int, 0);
+        const vit = this.readNumber(player.vit, 0);
+        const attackDamage = this.readNumber(player.attackDamage, 0);
+        const attackSpeed = this.readNumber(player.attackSpeed, 0);
+        const moveSpeed = this.readNumber(player.moveSpeed, 0);
 
-        if (this.statLabels["hp"]) this.statLabels["hp"].innerText = `${player.hp} / ${player.maxHp}`;
-        if (this.statLabels["damage"]) this.statLabels["damage"].innerText = String(player.attackDamage);
-        if (this.statLabels["speed"]) this.statLabels["speed"].innerText = player.attackSpeed.toFixed(2);
-        if (this.statLabels["move"]) this.statLabels["move"].innerText = player.moveSpeed.toFixed(2);
-        if (this.statLabels["exp"]) this.statLabels["exp"].innerText = `${player.exp} / ${player.expToNextLevel}`;
-        if (this.statLabels["points"]) this.statLabels["points"].innerText = String(player.bonusStatPoints);
-        if (this.statLabels["str"]) this.statLabels["str"].innerText = String(player.str);
-        if (this.statLabels["agi"]) this.statLabels["agi"].innerText = String(player.agi);
-        if (this.statLabels["int"]) this.statLabels["int"].innerText = String(player.int);
-        if (this.statLabels["vit"]) this.statLabels["vit"].innerText = String(player.vit);
+        if (this.nameLabel) this.nameLabel.innerText = name;
+        if (this.levelLabel) this.levelLabel.innerText = `Lv. ${level}`;
+        if (this.hpLabel) this.hpLabel.innerText = `${hp} / ${maxHp}`;
+        if (this.expLabel) this.expLabel.innerText = `EXP ${exp} / ${expToNextLevel}`;
+        if (this.pointsLabel) this.pointsLabel.innerText = `PTS ${bonusStatPoints}`;
 
-        const canAllocate = player.bonusStatPoints > 0;
+        if (this.statLabels["hp"]) this.statLabels["hp"].innerText = `${hp} / ${maxHp}`;
+        if (this.statLabels["damage"]) this.statLabels["damage"].innerText = String(attackDamage);
+        if (this.statLabels["speed"]) this.statLabels["speed"].innerText = attackSpeed.toFixed(2);
+        if (this.statLabels["move"]) this.statLabels["move"].innerText = moveSpeed.toFixed(2);
+        if (this.statLabels["exp"]) this.statLabels["exp"].innerText = `${exp} / ${expToNextLevel}`;
+        if (this.statLabels["points"]) this.statLabels["points"].innerText = String(bonusStatPoints);
+        if (this.statLabels["str"]) this.statLabels["str"].innerText = String(str);
+        if (this.statLabels["agi"]) this.statLabels["agi"].innerText = String(agi);
+        if (this.statLabels["int"]) this.statLabels["int"].innerText = String(int);
+        if (this.statLabels["vit"]) this.statLabels["vit"].innerText = String(vit);
+
+        const canAllocate = bonusStatPoints > 0;
         (["str", "agi", "int", "vit"] as AllocatableStat[]).forEach((stat) => {
             const button = this.statButtons[stat];
             if (!button) return;
@@ -321,5 +336,13 @@ export class HudManager {
         const label = document.createElement("span");
         label.innerText = text;
         return label;
+    }
+
+    private readNumber(value: unknown, fallback: number): number {
+        return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+    }
+
+    private readString(value: unknown, fallback: string): string {
+        return typeof value === "string" && value.trim() ? value : fallback;
     }
 }
