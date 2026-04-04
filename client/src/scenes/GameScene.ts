@@ -105,6 +105,9 @@ export class GameScene extends Phaser.Scene {
 
         try {
             this.room = await this.client.joinOrCreate('game_room');
+            // Set immediately — don't wait for 'init' message to avoid a race
+            // where the first snapshot arrives before the init message is processed.
+            this.mySessionId = this.room.sessionId;
             statusText.setText(`✓ ${this.room.sessionId}`);
         } catch (e) {
             statusText.setText('✗ Could not connect to server');
@@ -114,7 +117,7 @@ export class GameScene extends Phaser.Scene {
 
         // ── Message handlers ──────────────────────────────────────────────
 
-        /** Server tells us our own session ID */
+        /** Server confirms our session ID (redundant now, kept for safety) */
         this.room.onMessage('init', (data: { sessionId: string }) => {
             this.mySessionId = data.sessionId;
         });
@@ -287,14 +290,15 @@ export class GameScene extends Phaser.Scene {
         ]);
         container.setDepth(data.x + data.y);
 
-        // Make it interactive for click-to-attack
-        // The hitbox is a rectangle around the body+head area
-        container.setSize(28, 52);
-        container.setInteractive();
+        // Explicit hit area covering body + head (body: y -7 to -29, head: -29 to -47)
+        // Rectangle(x, y, width, height) in container-local space
+        const hitArea = new Phaser.Geom.Rectangle(-14, -47, 28, 49);
+        container.setInteractive(hitArea, Phaser.Geom.Rectangle.Contains);
+
         container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
-            if (!isLocal && this.mySessionId) {
-                // Lock this player as the auto-attack target
+            const isEnemy = sessionId !== this.mySessionId;
+            if (isEnemy && this.room) {
                 this.room.send('setTarget', { targetId: sessionId });
             }
         });
