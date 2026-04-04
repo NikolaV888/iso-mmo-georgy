@@ -39,6 +39,25 @@ export interface CombatResult {
  *  - Skills: call applyHit() directly with custom damage / effect params
  */
 export class CombatSystem {
+    private static readonly CHASE_BUFFER = 0.1;
+
+    /**
+     * Keep attackers walking toward their locked target until they are close
+     * enough to start swinging.
+     */
+    syncChasingTargets(players: MapSchema<Player>): void {
+        players.forEach((attacker: Player) => {
+            if (attacker.isDead || !attacker.combatTargetId) return;
+
+            const target = players.get(attacker.combatTargetId);
+            if (!target || target.isDead) {
+                this.stopAttacking(attacker);
+                return;
+            }
+
+            this.syncChasingTarget(attacker, target);
+        });
+    }
 
     /**
      * Run auto-attacks for every player that has a combatTargetId set.
@@ -55,7 +74,7 @@ export class CombatSystem {
 
             // Target gone or dead → unlock
             if (!target || target.isDead) {
-                attacker.combatTargetId = "";
+                this.stopAttacking(attacker);
                 return;
             }
 
@@ -83,7 +102,7 @@ export class CombatSystem {
     clearTargetForAll(leavingSid: string, players: MapSchema<Player>): void {
         players.forEach((player: Player) => {
             if (player.combatTargetId === leavingSid) {
-                player.combatTargetId = "";
+                this.stopAttacking(player);
             }
         });
     }
@@ -143,5 +162,37 @@ export class CombatSystem {
             target.respawnAt = now + GameConfig.RESPAWN_DELAY_MS;
             result.died.push(targetSid);
         }
+    }
+
+    syncChasingTarget(attacker: Player, target: Player): void {
+        const dx = target.x - attacker.x;
+        const dy = target.y - attacker.y;
+        const distanceSq = dx * dx + dy * dy;
+
+        if (distanceSq < 0.0001) {
+            attacker.targetX = attacker.x;
+            attacker.targetY = attacker.y;
+            return;
+        }
+
+        const distance = Math.sqrt(distanceSq);
+        const stopDistance = Math.max(0, attacker.attackRange - CombatSystem.CHASE_BUFFER);
+
+        if (distance <= stopDistance) {
+            attacker.targetX = attacker.x;
+            attacker.targetY = attacker.y;
+            return;
+        }
+
+        const nx = dx / distance;
+        const ny = dy / distance;
+        attacker.targetX = target.x - nx * stopDistance;
+        attacker.targetY = target.y - ny * stopDistance;
+    }
+
+    private stopAttacking(player: Player): void {
+        player.combatTargetId = "";
+        player.targetX = player.x;
+        player.targetY = player.y;
     }
 }

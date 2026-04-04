@@ -132,6 +132,16 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
+        this.room.onError((code, message) => {
+            statusText.setText(`✗ Room error ${code}`);
+            console.error('[Room error]', code, message);
+        });
+
+        this.room.onLeave((code) => {
+            statusText.setText(`✗ Disconnected (${code})`);
+            console.error('[Room leave]', code);
+        });
+
         // ── Message handlers ──────────────────────────────────────────────
 
         /** Server confirms our session ID (redundant now, kept for safety) */
@@ -143,7 +153,6 @@ export class GameScene extends Phaser.Scene {
         this.room.onMessage(
             'snapshot',
             (snap: Record<string, PlayerSnapshot>) => {
-                try {
                 // Add / update
                 for (const [sid, data] of Object.entries(snap)) {
                     if (!this.players.has(sid)) {
@@ -187,14 +196,12 @@ export class GameScene extends Phaser.Scene {
                 for (const sid of this.players.keys()) {
                     if (!snap[sid]) this.removePlayer(sid);
                 }
-                } catch (e) { console.error("[Snapshot Error]", e); }
             }
         );
 
         /** Hit feedback — show floating damage number */
         this.room.onMessage('combatEvent', (evt: CombatEvent) => {
-            try {
-                const target = this.players.get(evt.target);
+            const target = this.players.get(evt.target);
             if (target) {
                 this.spawnDamageNumber(
                     target.container.x,
@@ -202,34 +209,29 @@ export class GameScene extends Phaser.Scene {
                     evt.damage
                 );
             }
-            } catch (e) { console.error("[Combat Error]", e); }
         });
 
         /** A player just died */
         this.room.onMessage('playerDied', (data: { sessionId: string }) => {
-            try {
-                const p = this.players.get(data.sessionId);
+            const p = this.players.get(data.sessionId);
             if (p) {
                 p.isDead = true;
                 p.hp = 0;
                 this.updateDeadState(p);
                 this.updateHealthBar(p);
             }
-            } catch (e) { console.error("[Death Error]", e); }
         });
 
         /** A player respawned */
         this.room.onMessage(
             'playerRespawned',
             (data: { sessionId: string; x: number; y: number }) => {
-                try {
-                    const p = this.players.get(data.sessionId);
+                const p = this.players.get(data.sessionId);
                 if (p) {
                     p.isDead = false;
                     p.x = data.x;
                     p.y = data.y;
                 }
-                } catch (e) { console.error("[Respawn Error]", e); }
             }
         );
 
@@ -242,10 +244,8 @@ export class GameScene extends Phaser.Scene {
         this.room.onMessage(
             'chatMessage',
             (data: { sessionId: string; text: string }) => {
-                try {
-                    const p = this.players.get(data.sessionId);
+                const p = this.players.get(data.sessionId);
                 if (p) this.spawnChatBubble(p, data.text);
-                } catch (e) { console.error("[Chat Error]", e); }
             }
         );
 
@@ -267,10 +267,6 @@ export class GameScene extends Phaser.Scene {
             const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
             const cart  = this.isoToCart(world.x, world.y);
             this.room.send('move', { x: cart.x, y: cart.y });
-            // Moving clears the combat target (server mirrors this too)
-            if (this.myTargetId) {
-                this.room.send('clearTarget', {});
-            }
             this.spawnClickRipple(world.x, world.y);
         });
 
@@ -334,7 +330,7 @@ export class GameScene extends Phaser.Scene {
         container.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
             const isEnemy = sessionId !== this.mySessionId;
-            if (isEnemy && this.room) {
+            if (isEnemy && this.room && !data.isDead) {
                 this.room.send('setTarget', { targetId: sessionId });
             }
         });
