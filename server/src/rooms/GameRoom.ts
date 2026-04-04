@@ -1,43 +1,49 @@
 import { Room, Client } from "colyseus";
-import { GameState, Player } from "./schema/GameState";
 import { GameConfig } from "../config/GameConfig";
-import { MovementSystem } from "../systems/MovementSystem";
 import { CombatSystem } from "../systems/CombatSystem";
+import { MobSystem } from "../systems/MobSystem";
+import { MovementSystem } from "../systems/MovementSystem";
+import { PhysicsSystem } from "../systems/PhysicsSystem";
+import { AllocatableStat, StatsSystem } from "../systems/StatsSystem";
+import { GameState, Player } from "./schema/GameState";
 
-const TICK_MS       = 1000 / GameConfig.TICK_RATE_HZ;
-const BROADCAST_MS  = 1000 / GameConfig.BROADCAST_RATE_HZ;
+const TICK_MS = 1000 / GameConfig.TICK_RATE_HZ;
+const BROADCAST_MS = 1000 / GameConfig.BROADCAST_RATE_HZ;
+
+function isAllocatableStat(value: unknown): value is AllocatableStat {
+    return value === "str" || value === "agi" || value === "int" || value === "vit";
+}
 
 export class GameRoom extends Room<GameState> {
     maxClients = 100;
 
-    private movementSystem       = new MovementSystem();
-    private combatSystem         = new CombatSystem();
+    private movementSystem = new MovementSystem();
+    private combatSystem = new CombatSystem();
+    private physicsSystem = new PhysicsSystem();
+    private mobSystem = new MobSystem();
+    private statsSystem = new StatsSystem();
     private broadcastAccumulator = 0;
 
-    onCreate(_options: any) {
+    onCreate(_options: unknown) {
         this.setState(new GameState());
+        this.spawnDebugMobs();
 
-        // ── Message handlers ─────────────────────────────────────────────
-
-        /**
-         * Move — clears combat target so walking away stops the auto-attack loop.
-         * In the future a "chase-to-attack" mode can re-engage when in range.
-         */
         this.onMessage("move", (client: Client, data: { x: number; y: number }) => {
             const player = this.state.players.get(client.sessionId);
-            if (!player || player.isDead) return;
+            if (!player || player.isDead || player.isKnockedDown) return;
             if (!Number.isFinite(data?.x) || !Number.isFinite(data?.y)) return;
 
             player.targetX = data.x;
             player.targetY = data.y;
-            // Clicking the ground disengages auto-attack
             player.combatTargetId = "";
         });
 
-        /**
-         * setTarget — lock an auto-attack target.
-         * Clicking an enemy calls this; the server loop does the rest.
-         */
+        this.onMessage("jump", (client: Client) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isDead) return;
+            this.physicsSystem.jump(player, GameConfig.PLAYER_JUMP_SPEED, Date.now());
+        });
+
         this.onMessage("setTarget", (client: Client, data: { targetId: string }) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isDead) return;
@@ -51,65 +57,52 @@ export class GameRoom extends Room<GameState> {
             this.combatSystem.syncChasingTarget(player, target);
         });
 
-        /**
-         * clearTarget — manually disengage (right-click, UI button, etc.).
-         */
         this.onMessage("clearTarget", (client: Client) => {
             const player = this.state.players.get(client.sessionId);
             if (player) player.combatTargetId = "";
         });
 
-        /**
-         * Proximity chat — send only to players within CHAT_RANGE tiles.
-         */
+        this.onMessage("allocateStat", (client: Client, data: { stat: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isDead || !isAllocatableStat(data?.stat)) return;
+            this.statsSystem.allocateStat(player, data.stat);
+        });
+
         this.onMessage("chat", (client: Client, data: { text: string }) => {
             const sender = this.state.players.get(client.sessionId);
             if (!sender) return;
-            const text = String(data.text ?? "").trim().slice(0, GameConfig.CHAT_MAX_LENGTH);
+
+            const text = String(data.text ?? "")
+                .trim()
+                .slice(0, GameConfig.CHAT_MAX_LENGTH);
             if (!text) return;
 
-            this.clients.forEach((c) => {
-                const other = this.state.players.get(c.sessionId);
+            this.clients.forEach((otherClient) => {
+                const other = this.state.players.get(otherClient.sessionId);
                 if (!other) return;
+
                 const dx = other.x - sender.x;
                 const dy = other.y - sender.y;
                 if (Math.sqrt(dx * dx + dy * dy) <= GameConfig.CHAT_RANGE) {
-                    c.send("chatMessage", { sessionId: client.sessionId, text });
+                    otherClient.send("chatMessage", { sessionId: client.sessionId, text });
                 }
             });
         });
 
-        // ── Game loop ────────────────────────────────────────────────────
         this.setSimulationInterval((dt: number) => this.update(dt), TICK_MS);
     }
 
-    onJoin(client: Client, _options: any) {
+    onJoin(client: Client, _options: unknown) {
         console.log(`[Room] ${client.sessionId} joined`);
+
         const player = new Player();
-        player.x            = GameConfig.SPAWN_X;
-        player.y            = GameConfig.SPAWN_Y;
-        player.targetX      = GameConfig.SPAWN_X;
-        player.targetY      = GameConfig.SPAWN_Y;
-        
-        player.level        = GameConfig.PLAYER_BASE_LEVEL;
-        player.exp          = GameConfig.PLAYER_BASE_EXP;
-        player.str          = GameConfig.PLAYER_BASE_STR;
-        player.agi          = GameConfig.PLAYER_BASE_AGI;
-        player.int          = GameConfig.PLAYER_BASE_INT;
-        player.vit          = GameConfig.PLAYER_BASE_VIT;
-        
-        player.hp           = GameConfig.PLAYER_MAX_HP;
-        player.maxHp        = GameConfig.PLAYER_MAX_HP;
-        player.attackDamage = GameConfig.PLAYER_ATTACK_DAMAGE;
-        player.attackSpeed  = GameConfig.PLAYER_ATTACK_SPEED;
-        player.attackRange  = GameConfig.PLAYER_ATTACK_RANGE;
+        this.statsSystem.initializePlayer(player, `Player ${client.sessionId.slice(0, 4)}`);
         this.state.players.set(client.sessionId, player);
         client.send("init", { sessionId: client.sessionId });
     }
 
     onLeave(client: Client, _consented: boolean) {
         console.log(`[Room] ${client.sessionId} left`);
-        // Clear this player as a combat target for everyone before removing
         this.combatSystem.clearTargetForAll(client.sessionId, this.state.players);
         this.state.players.delete(client.sessionId);
         this.broadcast("playerLeft", { sessionId: client.sessionId });
@@ -119,33 +112,40 @@ export class GameRoom extends Room<GameState> {
         console.log(`[Room] ${this.roomId} disposed`);
     }
 
-    // ── Private ──────────────────────────────────────────────────────────────
-
     private update(deltaTime: number) {
         try {
             const now = Date.now();
 
-            // 1. Keep attackers walking into range, then move everyone.
+            this.mobSystem.update(this.state.players, now, this.physicsSystem);
             this.combatSystem.syncChasingTargets(this.state.players);
             this.movementSystem.update(this.state.players, deltaTime);
+            this.physicsSystem.update(this.state.players, deltaTime, now);
 
-            // 2. Auto-attacks
-            const combatResult = this.combatSystem.processAutoAttacks(this.state.players, now);
-            combatResult.events.forEach(evt  => this.broadcast("combatEvent", evt));
-            combatResult.died.forEach(sid    => {
-                // Clear everyone targeting the dead player
-                this.combatSystem.clearTargetForAll(sid, this.state.players);
-                this.broadcast("playerDied", { sessionId: sid });
+            const combatResult = this.combatSystem.processAutoAttacks(
+                this.state.players,
+                now,
+                this.physicsSystem,
+                this.statsSystem
+            );
+
+            combatResult.events.forEach((evt) => this.broadcast("combatEvent", evt));
+            combatResult.died.forEach(({ sessionId }) => {
+                this.combatSystem.clearTargetForAll(sessionId, this.state.players);
+                this.broadcast("playerDied", { sessionId });
             });
 
-            // 3. Respawns
             const respawned = this.combatSystem.processRespawns(this.state.players, now);
-            respawned.forEach(sid => {
-                const p = this.state.players.get(sid);
-                if (p) this.broadcast("playerRespawned", { sessionId: sid, x: p.x, y: p.y });
+            respawned.forEach((sessionId) => {
+                const player = this.state.players.get(sessionId);
+                if (!player) return;
+                this.broadcast("playerRespawned", {
+                    sessionId,
+                    x: player.x,
+                    y: player.y,
+                    z: player.z,
+                });
             });
 
-            // 4. Snapshot broadcast at BROADCAST_RATE_HZ
             this.broadcastAccumulator += deltaTime;
             if (this.broadcastAccumulator >= BROADCAST_MS) {
                 this.broadcastAccumulator = 0;
@@ -158,34 +158,77 @@ export class GameRoom extends Room<GameState> {
 
     private broadcastSnapshot() {
         const snapshot: Record<string, {
-            x: number; y: number;
-            level: number; exp: number;
-            str: number; agi: number; int: number; vit: number;
-            attackDamage: number; attackSpeed: number;
-            hp: number; maxHp: number;
+            name: string;
+            isMob: boolean;
+            mobKind: string;
+            x: number;
+            y: number;
+            z: number;
+            groundZ: number;
+            level: number;
+            exp: number;
+            expToNextLevel: number;
+            bonusStatPoints: number;
+            str: number;
+            agi: number;
+            int: number;
+            vit: number;
+            attackDamage: number;
+            attackSpeed: number;
+            moveSpeed: number;
+            hp: number;
+            maxHp: number;
             isDead: boolean;
+            isGrounded: boolean;
+            isFlying: boolean;
+            isKnockedDown: boolean;
             combatTargetId: string;
         }> = {};
 
-        this.state.players.forEach((p: Player, sid: string) => {
-            snapshot[sid] = {
-                x:              p.x,
-                y:              p.y,
-                level:          p.level,
-                exp:            p.exp,
-                str:            p.str,
-                agi:            p.agi,
-                int:            p.int,
-                vit:            p.vit,
-                attackDamage:   p.attackDamage,
-                attackSpeed:    p.attackSpeed,
-                hp:             p.hp,
-                maxHp:          p.maxHp,
-                isDead:         p.isDead,
-                combatTargetId: p.combatTargetId,
+        this.state.players.forEach((player: Player, sessionId: string) => {
+            snapshot[sessionId] = {
+                name: player.name,
+                isMob: player.isMob,
+                mobKind: player.mobKind,
+                x: player.x,
+                y: player.y,
+                z: player.z,
+                groundZ: player.groundZ,
+                level: player.level,
+                exp: player.exp,
+                expToNextLevel: player.expToNextLevel,
+                bonusStatPoints: player.bonusStatPoints,
+                str: player.str,
+                agi: player.agi,
+                int: player.int,
+                vit: player.vit,
+                attackDamage: player.attackDamage,
+                attackSpeed: player.attackSpeed,
+                moveSpeed: player.moveSpeed,
+                hp: player.hp,
+                maxHp: player.maxHp,
+                isDead: player.isDead,
+                isGrounded: player.isGrounded,
+                isFlying: player.isFlying,
+                isKnockedDown: player.isKnockedDown,
+                combatTargetId: player.combatTargetId,
             };
         });
 
         this.broadcast("snapshot", snapshot);
+    }
+
+    private spawnDebugMobs() {
+        const slimeA = new Player();
+        this.statsSystem.initializeMob(slimeA, "slime", 6, 12);
+        this.state.players.set("mob:slime:1", slimeA);
+
+        const slimeB = new Player();
+        this.statsSystem.initializeMob(slimeB, "slime", 13, 12);
+        this.state.players.set("mob:slime:2", slimeB);
+
+        const bat = new Player();
+        this.statsSystem.initializeMob(bat, "bat", 15, 7);
+        this.state.players.set("mob:bat:1", bat);
     }
 }

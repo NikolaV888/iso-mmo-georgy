@@ -1,35 +1,56 @@
-/**
- * HudManager manages DOM-based UI overlays on top of the Phaser canvas.
- * It builds the bottom bar Action Menu and the Stats Window, updating them
- * when the server pushes a state snapshot.
- */
+export type AllocatableStat = "str" | "agi" | "int" | "vit";
+
+export interface HudPlayerData {
+    name: string;
+    level: number;
+    exp: number;
+    expToNextLevel: number;
+    bonusStatPoints: number;
+    hp: number;
+    maxHp: number;
+    str: number;
+    agi: number;
+    int: number;
+    vit: number;
+    attackDamage: number;
+    attackSpeed: number;
+    moveSpeed: number;
+}
+
 export class HudManager {
     private wrapper: HTMLDivElement;
+    private onAllocateStat?: (stat: AllocatableStat) => void;
 
-    // UI Elements
     private statsWindow: HTMLDivElement | null = null;
+    private nameLabel: HTMLSpanElement | null = null;
     private hpLabel: HTMLSpanElement | null = null;
     private levelLabel: HTMLSpanElement | null = null;
+    private expLabel: HTMLSpanElement | null = null;
+    private pointsLabel: HTMLSpanElement | null = null;
 
-    // ...
     private statLabels: Record<string, HTMLSpanElement> = {};
+    private statButtons: Partial<Record<AllocatableStat, HTMLButtonElement>> = {};
 
-    constructor() {
-        const existing = document.getElementById('hud-wrapper');
+    constructor(onAllocateStat?: (stat: AllocatableStat) => void) {
+        const existing = document.getElementById("hud-wrapper");
         if (existing) existing.remove();
 
-        this.wrapper = document.createElement('div');
-        this.wrapper.id = 'hud-wrapper';
+        this.onAllocateStat = onAllocateStat;
+        this.wrapper = document.createElement("div");
+        this.wrapper.id = "hud-wrapper";
 
         Object.assign(this.wrapper.style, {
-            position: 'fixed',
-            top: '0', left: '0', right: '0', bottom: '0',
-            pointerEvents: 'none', // click through transparent areas
-            zIndex: '1000',
-            fontFamily: 'monospace, sans-serif'
+            position: "fixed",
+            top: "0",
+            left: "0",
+            right: "0",
+            bottom: "0",
+            pointerEvents: "none",
+            zIndex: "1000",
+            fontFamily: "monospace, sans-serif",
         });
-        document.body.appendChild(this.wrapper);
 
+        document.body.appendChild(this.wrapper);
         this.buildTopLeftPortrait();
         this.buildBottomActionBar();
         this.buildStatsWindow();
@@ -38,179 +59,267 @@ export class HudManager {
     public destroy() {
         this.wrapper.remove();
         this.statsWindow = null;
+        this.nameLabel = null;
         this.hpLabel = null;
         this.levelLabel = null;
+        this.expLabel = null;
+        this.pointsLabel = null;
         this.statLabels = {};
+        this.statButtons = {};
     }
 
-    /** Called 20x a second when the snapshot arrives */
-    public updateLocalPlayer(p: any) {
-        if (!p) return;
+    public updateLocalPlayer(player: HudPlayerData) {
+        if (this.nameLabel) this.nameLabel.innerText = player.name;
+        if (this.levelLabel) this.levelLabel.innerText = `Lv. ${player.level}`;
+        if (this.hpLabel) this.hpLabel.innerText = `${player.hp} / ${player.maxHp}`;
+        if (this.expLabel) this.expLabel.innerText = `EXP ${player.exp} / ${player.expToNextLevel}`;
+        if (this.pointsLabel) this.pointsLabel.innerText = `PTS ${player.bonusStatPoints}`;
 
-        // Update Top Left HUD
-        if (this.hpLabel) this.hpLabel.innerText = `${p.hp} / ${p.maxHp}`;
-        if (this.levelLabel) this.levelLabel.innerText = `Lv. ${p.level}`;
+        if (this.statLabels["hp"]) this.statLabels["hp"].innerText = `${player.hp} / ${player.maxHp}`;
+        if (this.statLabels["damage"]) this.statLabels["damage"].innerText = String(player.attackDamage);
+        if (this.statLabels["speed"]) this.statLabels["speed"].innerText = player.attackSpeed.toFixed(2);
+        if (this.statLabels["move"]) this.statLabels["move"].innerText = player.moveSpeed.toFixed(2);
+        if (this.statLabels["exp"]) this.statLabels["exp"].innerText = `${player.exp} / ${player.expToNextLevel}`;
+        if (this.statLabels["points"]) this.statLabels["points"].innerText = String(player.bonusStatPoints);
+        if (this.statLabels["str"]) this.statLabels["str"].innerText = String(player.str);
+        if (this.statLabels["agi"]) this.statLabels["agi"].innerText = String(player.agi);
+        if (this.statLabels["int"]) this.statLabels["int"].innerText = String(player.int);
+        if (this.statLabels["vit"]) this.statLabels["vit"].innerText = String(player.vit);
 
-        // Update Stats Window
-        if (this.statLabels['hp']) this.statLabels['hp'].innerText = `${p.hp} / ${p.maxHp}`;
-        if (this.statLabels['damage']) this.statLabels['damage'].innerText = String(p.attackDamage);
-        if (this.statLabels['speed']) this.statLabels['speed'].innerText = String(p.attackSpeed);
-
-        if (this.statLabels['str']) this.statLabels['str'].innerText = String(p.str);
-        if (this.statLabels['agi']) this.statLabels['agi'].innerText = String(p.agi);
-        if (this.statLabels['int']) this.statLabels['int'].innerText = String(p.int);
-        if (this.statLabels['vit']) this.statLabels['vit'].innerText = String(p.vit);
+        const canAllocate = player.bonusStatPoints > 0;
+        (["str", "agi", "int", "vit"] as AllocatableStat[]).forEach((stat) => {
+            const button = this.statButtons[stat];
+            if (!button) return;
+            button.disabled = !canAllocate;
+            button.style.opacity = canAllocate ? "1" : "0.45";
+            button.style.cursor = canAllocate ? "pointer" : "default";
+        });
     }
-
-    // ── Build Methods ─────────────────────────────────────────────────────────
 
     private buildTopLeftPortrait() {
-        const topBar = document.createElement('div');
+        const topBar = document.createElement("div");
         Object.assign(topBar.style, {
-            position: 'absolute',
-            top: '10px', left: '10px',
-            backgroundColor: 'rgba(15, 15, 20, 0.85)',
-            border: '2px solid #554433',
-            borderRadius: '4px',
-            padding: '8px 16px',
-            color: '#eeffee',
-            pointerEvents: 'auto',
-            display: 'flex', gap: '16px', alignItems: 'center'
+            position: "absolute",
+            top: "10px",
+            left: "10px",
+            backgroundColor: "rgba(15, 15, 20, 0.88)",
+            border: "2px solid #554433",
+            borderRadius: "4px",
+            padding: "8px 14px",
+            color: "#eeffee",
+            pointerEvents: "auto",
+            display: "flex",
+            gap: "14px",
+            alignItems: "center",
+            flexWrap: "wrap",
         });
 
-        const nameLabel = document.createElement('strong');
-        nameLabel.innerText = "Player";
-        nameLabel.style.color = "#ffaa00";
+        this.nameLabel = document.createElement("span");
+        this.nameLabel.innerText = "Player";
+        this.nameLabel.style.color = "#ffaa00";
+        this.nameLabel.style.fontWeight = "bold";
 
-        this.levelLabel = document.createElement('span');
+        this.levelLabel = document.createElement("span");
         this.levelLabel.innerText = "Lv. 1";
 
-        this.hpLabel = document.createElement('span');
+        this.hpLabel = document.createElement("span");
         this.hpLabel.innerText = "100 / 100";
-        this.hpLabel.style.color = "#ff4444";
+        this.hpLabel.style.color = "#ff6666";
         this.hpLabel.style.fontWeight = "bold";
 
-        topBar.appendChild(nameLabel);
-        topBar.appendChild(this.levelLabel);
-        const hpTitle = document.createElement('span');
-        hpTitle.innerText = "HP:";
-        topBar.appendChild(hpTitle);
-        topBar.appendChild(this.hpLabel);
+        this.expLabel = document.createElement("span");
+        this.expLabel.innerText = "EXP 0 / 35";
+        this.expLabel.style.color = "#88ccff";
 
+        this.pointsLabel = document.createElement("span");
+        this.pointsLabel.innerText = "PTS 0";
+        this.pointsLabel.style.color = "#ffe17a";
+
+        topBar.appendChild(this.nameLabel);
+        topBar.appendChild(this.levelLabel);
+        topBar.appendChild(this.makeLabel("HP:"));
+        topBar.appendChild(this.hpLabel);
+        topBar.appendChild(this.expLabel);
+        topBar.appendChild(this.pointsLabel);
         this.wrapper.appendChild(topBar);
     }
 
     private buildBottomActionBar() {
-        const bottomBar = document.createElement('div');
+        const bottomBar = document.createElement("div");
         Object.assign(bottomBar.style, {
-            position: 'absolute',
-            bottom: '0px', left: '0px', width: '100%',
-            height: '48px',
-            backgroundColor: 'rgba(30, 20, 15, 0.95)',
-            borderTop: '2px solid #554433',
-            display: 'flex',
-            justifyContent: 'center', alignItems: 'center', gap: '8px',
-            pointerEvents: 'auto'
+            position: "absolute",
+            bottom: "0",
+            left: "0",
+            width: "100%",
+            height: "48px",
+            backgroundColor: "rgba(30, 20, 15, 0.95)",
+            borderTop: "2px solid #554433",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: "8px",
+            pointerEvents: "auto",
         });
 
-        const buttons = ["Stats", "Pack", "Quests", "Party", "Skills", "Guild", "Options"];
-        
-        buttons.forEach(label => {
-            const btn = document.createElement('button');
-            btn.innerText = label;
-            Object.assign(btn.style, {
-                backgroundColor: '#3a2d21',
-                border: '1px solid #554433',
-                color: '#ddcca0',
-                fontWeight: 'bold',
-                padding: '6px 16px',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                outline: 'none'
+        ["Stats", "Jump", "Pack", "Quests", "Party", "Skills"].forEach((label) => {
+            const button = document.createElement("button");
+            button.innerText = label;
+
+            Object.assign(button.style, {
+                backgroundColor: "#3a2d21",
+                border: "1px solid #554433",
+                color: "#ddcca0",
+                fontWeight: "bold",
+                padding: "6px 16px",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                outline: "none",
             });
 
-            btn.addEventListener('mouseenter', () => btn.style.backgroundColor = '#4c392b');
-            btn.addEventListener('mouseleave', () => btn.style.backgroundColor = '#3a2d21');
+            button.addEventListener("mouseenter", () => {
+                button.style.backgroundColor = "#4c392b";
+            });
+            button.addEventListener("mouseleave", () => {
+                button.style.backgroundColor = "#3a2d21";
+            });
 
-            if (label === 'Stats') {
-                btn.addEventListener('click', () => this.toggleStatsWindow());
+            if (label === "Stats") {
+                button.addEventListener("click", () => this.toggleStatsWindow());
             }
 
-            bottomBar.appendChild(btn);
+            bottomBar.appendChild(button);
         });
 
         this.wrapper.appendChild(bottomBar);
     }
 
     private buildStatsWindow() {
-        this.statsWindow = document.createElement('div');
+        this.statsWindow = document.createElement("div");
         Object.assign(this.statsWindow.style, {
-            position: 'absolute',
-            bottom: '60px', left: '10px', // Docked above the bottom bar on the left
-            width: '240px',
-            backgroundColor: 'rgba(20, 20, 25, 0.9)',
-            border: '2px solid #554433',
-            borderRadius: '4px',
-            padding: '12px',
-            display: 'none', // Hidden by default
-            flexDirection: 'column', gap: '8px',
-            pointerEvents: 'auto',
-            color: '#eeeedd'
+            position: "absolute",
+            bottom: "60px",
+            left: "10px",
+            width: "260px",
+            backgroundColor: "rgba(20, 20, 25, 0.92)",
+            border: "2px solid #554433",
+            borderRadius: "4px",
+            padding: "12px",
+            display: "none",
+            flexDirection: "column",
+            gap: "8px",
+            pointerEvents: "auto",
+            color: "#eeeedd",
         });
 
-        const title = document.createElement('div');
+        const title = document.createElement("div");
         title.innerText = "CHARACTER STATS";
         Object.assign(title.style, {
-            textAlign: 'center', fontWeight: 'bold',
-            borderBottom: '1px solid #554433', paddingBottom: '8px',
-            marginBottom: '4px', color: '#ffaa00'
+            textAlign: "center",
+            fontWeight: "bold",
+            borderBottom: "1px solid #554433",
+            paddingBottom: "8px",
+            marginBottom: "4px",
+            color: "#ffaa00",
         });
         this.statsWindow.appendChild(title);
 
-        // Core stats
-        this.addStatRow("HP", "hp", "#ff4444");
+        this.addStatRow("HP", "hp", "#ff6666");
         this.addStatRow("Damage", "damage", "#ffaa00");
         this.addStatRow("Atk Speed", "speed", "#aaffaa");
-        
-        const sep = document.createElement('div');
-        Object.assign(sep.style, { height: '1px', backgroundColor: '#554433', margin: '4px 0' });
-        this.statsWindow.appendChild(sep);
+        this.addStatRow("Move Speed", "move", "#88ccff");
+        this.addStatRow("EXP", "exp", "#88ccff");
+        this.addStatRow("Unspent", "points", "#ffe17a");
 
-        // RPG stats
-        this.addStatRow("STR", "str", "#ffffff");
-        this.addStatRow("AGI", "agi", "#ffffff");
-        this.addStatRow("INT", "int", "#ffffff");
-        this.addStatRow("VIT", "vit", "#ffffff");
+        const divider = document.createElement("div");
+        Object.assign(divider.style, {
+            height: "1px",
+            backgroundColor: "#554433",
+            margin: "4px 0",
+        });
+        this.statsWindow.appendChild(divider);
+
+        this.addStatRow("STR", "str", "#ffffff", "str");
+        this.addStatRow("AGI", "agi", "#ffffff", "agi");
+        this.addStatRow("INT", "int", "#ffffff", "int");
+        this.addStatRow("VIT", "vit", "#ffffff", "vit");
 
         this.wrapper.appendChild(this.statsWindow);
     }
 
-    private addStatRow(label: string, key: string, color: string) {
+    private addStatRow(
+        label: string,
+        key: string,
+        color: string,
+        allocatableStat?: AllocatableStat
+    ) {
         if (!this.statsWindow) return;
-        const row = document.createElement('div');
-        Object.assign(row.style, { display: 'flex', justifyContent: 'space-between' });
 
-        const lbl = document.createElement('span');
-        lbl.innerText = label;
-        lbl.style.fontWeight = "bold";
+        const row = document.createElement("div");
+        Object.assign(row.style, {
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "8px",
+        });
 
-        const val = document.createElement('span');
-        val.innerText = "0";
-        val.style.color = color;
+        const left = document.createElement("span");
+        left.innerText = label;
+        left.style.fontWeight = "bold";
 
-        this.statLabels[key] = val;
+        const right = document.createElement("div");
+        Object.assign(right.style, {
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+        });
 
-        row.appendChild(lbl);
-        row.appendChild(val);
+        const value = document.createElement("span");
+        value.innerText = "0";
+        value.style.color = color;
+        value.style.minWidth = "48px";
+        value.style.textAlign = "right";
+        this.statLabels[key] = value;
+
+        right.appendChild(value);
+
+        if (allocatableStat) {
+            const button = document.createElement("button");
+            button.innerText = "+";
+            button.disabled = true;
+            Object.assign(button.style, {
+                width: "24px",
+                height: "24px",
+                backgroundColor: "#3a2d21",
+                border: "1px solid #554433",
+                color: "#ffe17a",
+                fontWeight: "bold",
+                cursor: "default",
+                fontFamily: "inherit",
+                opacity: "0.45",
+            });
+
+            button.addEventListener("click", () => {
+                if (button.disabled) return;
+                this.onAllocateStat?.(allocatableStat);
+            });
+
+            this.statButtons[allocatableStat] = button;
+            right.appendChild(button);
+        }
+
+        row.appendChild(left);
+        row.appendChild(right);
         this.statsWindow.appendChild(row);
     }
 
     private toggleStatsWindow() {
         if (!this.statsWindow) return;
-        if (this.statsWindow.style.display === 'none') {
-            this.statsWindow.style.display = 'flex';
-        } else {
-            this.statsWindow.style.display = 'none';
-        }
+        this.statsWindow.style.display = this.statsWindow.style.display === "none" ? "flex" : "none";
+    }
+
+    private makeLabel(text: string): HTMLSpanElement {
+        const label = document.createElement("span");
+        label.innerText = text;
+        return label;
     }
 }
