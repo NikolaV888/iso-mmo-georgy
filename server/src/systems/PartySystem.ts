@@ -76,7 +76,7 @@ export class PartySystem {
         }
 
         const target = players.get(targetId);
-        if (!target || target.isMob) {
+        if (!target || target.isMob || target.isNpc) {
             return { error: "That player is not available." };
         }
 
@@ -195,7 +195,7 @@ export class PartySystem {
 
         const recipients = Array.from(party.members).filter((memberId) => {
             const candidate = players.get(memberId);
-            if (!candidate || candidate.isDead || candidate.isMob) return false;
+            if (!candidate || candidate.isDead || candidate.isMob || candidate.isNpc) return false;
 
             const dx = candidate.x - source.x;
             const dy = candidate.y - source.y;

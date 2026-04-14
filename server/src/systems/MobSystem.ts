@@ -46,6 +46,7 @@ export class MobSystem {
                 existing &&
                 !existing.isDead &&
                 !existing.isMob &&
+                !existing.isNpc &&
                 this.distance(mob, existing) <= GameConfig.MOB_LEASH_RANGE &&
                 this.distanceToSpawn(mob) <= GameConfig.MOB_LEASH_RANGE + 1
             ) {
@@ -57,7 +58,7 @@ export class MobSystem {
         let nearestDistance = Number.POSITIVE_INFINITY;
 
         players.forEach((candidate: Player, candidateId: string) => {
-            if (candidateId === mobId || candidate.isDead || candidate.isMob) return;
+            if (candidateId === mobId || candidate.isDead || candidate.isMob || candidate.isNpc) return;
 
             const distance = this.distance(mob, candidate);
             if (distance <= GameConfig.MOB_AGGRO_RANGE && distance < nearestDistance) {

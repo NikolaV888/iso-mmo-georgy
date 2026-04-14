@@ -1,4 +1,13 @@
 import { Schema, MapSchema, type } from "@colyseus/schema";
+import {
+    createEmptyEquipmentLoadout,
+    createEmptyInventoryCollection,
+    type EquipmentLoadout,
+    type InventoryCollection,
+} from "../../config/ItemCatalog";
+import type { NpcKind } from "../../config/NpcCatalog";
+import type { QuestId } from "../../config/QuestCatalog";
+import type { SkillId } from "../../config/SkillCatalog";
 
 /**
  * Player doubles as the shared combat entity model for both real players and mobs.
@@ -9,6 +18,8 @@ export class Player extends Schema {
     @type("string") name: string = "Player";
     @type("boolean") isMob: boolean = false;
     @type("string") mobKind: string = "";
+    @type("boolean") isNpc: boolean = false;
+    @type("string") npcKind: string = "";
 
     // --- Position / Iso Physics ---
     @type("number") x: number = 0;
@@ -66,6 +77,14 @@ export class Player extends Schema {
     inputX: number = 0;
     inputY: number = 0;
     goldReward: number = 0;
+
+    inventory: InventoryCollection = createEmptyInventoryCollection();
+    equipment: EquipmentLoadout = createEmptyEquipmentLoadout();
+    skillCooldowns: Partial<Record<SkillId, number>> = {};
+    acceptedQuestIds: QuestId[] = [];
+    claimedQuestIds: QuestId[] = [];
+    questProgress: Partial<Record<QuestId, number>> = {};
+    activeNpcId: string = "";
 }
 
 export class GameState extends Schema {

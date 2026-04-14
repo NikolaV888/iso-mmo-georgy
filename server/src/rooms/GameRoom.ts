@@ -1,16 +1,31 @@
 import { Room, Client } from "colyseus";
 import { GameConfig } from "../config/GameConfig";
-import { CombatSystem } from "../systems/CombatSystem";
+import {
+    isEquipmentSlot,
+    isInventoryTab,
+    type EquipmentSlot,
+    type InventoryTab,
+} from "../config/ItemCatalog";
+import type { NpcKind } from "../config/NpcCatalog";
+import { isQuestId } from "../config/QuestCatalog";
+import { isSkillId } from "../config/SkillCatalog";
+import { CombatSystem, type CombatResult } from "../systems/CombatSystem";
+import { InventorySystem } from "../systems/InventorySystem";
 import { MobSystem } from "../systems/MobSystem";
 import { MovementSystem } from "../systems/MovementSystem";
+import { NpcSystem } from "../systems/NpcSystem";
 import { PartySystem } from "../systems/PartySystem";
 import { PhysicsSystem } from "../systems/PhysicsSystem";
+import { QuestSystem } from "../systems/QuestSystem";
+import { ShopSystem } from "../systems/ShopSystem";
+import { SkillSystem } from "../systems/SkillSystem";
 import { AllocatableStat, StatsSystem } from "../systems/StatsSystem";
 import { TerrainSystem } from "../systems/TerrainSystem";
 import { GameState, Player } from "./schema/GameState";
 
 const TICK_MS = 1000 / GameConfig.TICK_RATE_HZ;
 const BROADCAST_MS = 1000 / GameConfig.BROADCAST_RATE_HZ;
+const OWNER_STATE_MS = 1000 / GameConfig.OWNER_STATE_RATE_HZ;
 
 function isAllocatableStat(value: unknown): value is AllocatableStat {
     return value === "str" || value === "agi" || value === "int" || value === "vit";
@@ -29,11 +44,18 @@ export class GameRoom extends Room<GameState> {
     private physicsSystem = new PhysicsSystem();
     private mobSystem = new MobSystem();
     private statsSystem = new StatsSystem();
+    private inventorySystem = new InventorySystem(this.statsSystem);
     private partySystem = new PartySystem();
+    private shopSystem = new ShopSystem();
+    private questSystem = new QuestSystem(this.statsSystem, this.inventorySystem);
+    private npcSystem = new NpcSystem();
+    private skillSystem = new SkillSystem();
     private broadcastAccumulator = 0;
+    private ownerStateAccumulator = 0;
 
     onCreate(_options: unknown) {
         this.setState(new GameState());
+        this.npcSystem.spawnNpcs(this.state.players);
         this.spawnDebugMobs();
 
         this.onMessage("move", (client: Client, data: { x: number; y: number }) => {
@@ -46,6 +68,7 @@ export class GameRoom extends Room<GameState> {
             player.targetX = data.x;
             player.targetY = data.y;
             player.combatTargetId = "";
+            this.npcSystem.closeInteraction(player);
 
             this.tryAutoJumpToward(player, data.x, data.y, Date.now());
         });
@@ -69,6 +92,7 @@ export class GameRoom extends Room<GameState> {
             player.targetX = player.x;
             player.targetY = player.y;
             player.combatTargetId = "";
+            this.npcSystem.closeInteraction(player);
 
             this.tryAutoJumpToward(
                 player,
@@ -81,6 +105,7 @@ export class GameRoom extends Room<GameState> {
         this.onMessage("jump", (client: Client) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isDead) return;
+            this.npcSystem.closeInteraction(player);
             this.physicsSystem.jump(player, GameConfig.PLAYER_JUMP_SPEED, Date.now());
         });
 
@@ -91,9 +116,10 @@ export class GameRoom extends Room<GameState> {
             if (data.targetId === client.sessionId) return;
 
             const target = this.state.players.get(data.targetId);
-            if (!target || target.isDead) return;
+            if (!target || target.isDead || target.isNpc) return;
 
             player.combatTargetId = data.targetId;
+            this.npcSystem.closeInteraction(player);
             this.combatSystem.syncChasingTarget(player, target);
         });
 
@@ -106,6 +132,207 @@ export class GameRoom extends Room<GameState> {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isDead || !isAllocatableStat(data?.stat)) return;
             this.statsSystem.allocateStat(player, data.stat);
+        });
+
+        this.onMessage("inventoryEquip", (client: Client, data: { tab: InventoryTab; index: number }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob) return;
+            if (!isInventoryTab(data?.tab)) return;
+
+            const result = this.inventorySystem.equipItem(player, data.tab, data.index);
+            if (result.error) {
+                this.sendInventoryNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendInventoryState(client);
+            if (result.info) this.sendInventoryNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("inventoryUnequip", (client: Client, data: { slot: EquipmentSlot }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob) return;
+            if (!isEquipmentSlot(data?.slot)) return;
+
+            const result = this.inventorySystem.unequipItem(player, data.slot);
+            if (result.error) {
+                this.sendInventoryNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendInventoryState(client);
+            if (result.info) this.sendInventoryNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("inventoryUse", (client: Client, data: { tab: InventoryTab; index: number }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isDead) return;
+            if (!isInventoryTab(data?.tab)) return;
+
+            const result = this.inventorySystem.useItem(player, data.tab, data.index);
+            if (result.error) {
+                this.sendInventoryNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            this.sendInventoryState(client);
+            if (result.info) this.sendInventoryNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("interactNpc", (client: Client, data: { npcId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isNpc || typeof data?.npcId !== "string") return;
+
+            const result = this.npcSystem.openInteraction(player, data.npcId, this.state.players);
+            this.sendNpcDialogState(client);
+
+            if (result.error) {
+                this.sendNpcNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            const npcName = this.state.players.get(data.npcId)?.name ?? "NPC";
+            this.sendNpcNotice(client.sessionId, "info", `Talking to ${npcName}.`);
+        });
+
+        this.onMessage("npcClose", (client: Client) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isNpc) return;
+
+            this.npcSystem.closeInteraction(player);
+            this.sendNpcDialogState(client);
+        });
+
+        this.onMessage("shopBuy", (client: Client, data: { itemId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isNpc) return;
+
+            const activeNpc = this.getActiveNpc(player);
+            if (!activeNpc) {
+                this.sendNpcDialogState(client);
+                this.sendNpcNotice(client.sessionId, "error", "Talk to a merchant first.");
+                return;
+            }
+
+            const result = this.shopSystem.buyItem(
+                player,
+                activeNpc.npcKind as NpcKind,
+                String(data?.itemId ?? ""),
+                this.inventorySystem
+            );
+
+            this.sendInventoryState(client);
+            this.sendNpcDialogState(client);
+
+            if (result.error) {
+                this.sendNpcNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            if (result.info) this.sendNpcNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("shopSell", (client: Client, data: { tab: InventoryTab; index: number }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isNpc) return;
+
+            const activeNpc = this.getActiveNpc(player);
+            if (!activeNpc) {
+                this.sendNpcDialogState(client);
+                this.sendNpcNotice(client.sessionId, "error", "Talk to a merchant first.");
+                return;
+            }
+
+            const result = this.shopSystem.sellItem(player, data?.tab, data?.index, this.inventorySystem);
+            this.sendInventoryState(client);
+            this.sendNpcDialogState(client);
+
+            if (result.error) {
+                this.sendNpcNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            if (result.info) this.sendNpcNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("questAccept", (client: Client, data: { questId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isNpc || !isQuestId(data?.questId)) return;
+
+            const activeNpc = this.getActiveNpc(player);
+            if (!activeNpc) {
+                this.sendNpcDialogState(client);
+                this.sendNpcNotice(client.sessionId, "error", "Talk to the quest giver first.");
+                return;
+            }
+
+            const result = this.questSystem.acceptQuest(player, data.questId);
+            this.sendQuestState(client);
+            this.sendNpcDialogState(client);
+
+            if (result.error) {
+                this.sendNpcNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            if (result.info) this.sendNpcNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("questClaim", (client: Client, data: { questId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob || player.isNpc || !isQuestId(data?.questId)) return;
+
+            const activeNpc = this.getActiveNpc(player);
+            if (!activeNpc) {
+                this.sendNpcDialogState(client);
+                this.sendNpcNotice(client.sessionId, "error", "Talk to the quest giver first.");
+                return;
+            }
+
+            const result = this.questSystem.claimQuest(player, data.questId);
+            this.sendQuestState(client);
+            this.sendInventoryState(client);
+            this.sendSkillState(client, Date.now());
+            this.sendNpcDialogState(client);
+
+            if (result.error) {
+                this.sendNpcNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            if (result.info) this.sendNpcNotice(client.sessionId, "info", result.info);
+        });
+
+        this.onMessage("skillUse", (client: Client, data: { skillId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isMob) return;
+            if (!isSkillId(data?.skillId)) return;
+
+            const now = Date.now();
+            const result = this.skillSystem.useSkill(
+                player,
+                client.sessionId,
+                data.skillId,
+                this.state.players,
+                now,
+                this.physicsSystem,
+                this.combatSystem
+            );
+
+            if (result.error) {
+                this.sendSkillState(client, now);
+                this.sendSkillNotice(client.sessionId, "error", result.error);
+                return;
+            }
+
+            if (result.combat) {
+                this.processCombatResult(result.combat);
+            }
+
+            this.sendSkillState(client, Date.now());
+            if (result.info) {
+                this.sendSkillNotice(client.sessionId, "info", result.info);
+            }
         });
 
         this.onMessage("partyCreate", (client: Client) => {
@@ -232,9 +459,16 @@ export class GameRoom extends Room<GameState> {
 
         const player = new Player();
         this.statsSystem.initializePlayer(player, `Player ${client.sessionId.slice(0, 4)}`);
+        this.inventorySystem.initializePlayerInventory(player);
+        this.questSystem.initializePlayerQuests(player);
+        this.skillSystem.initializePlayerSkills(player);
         this.state.players.set(client.sessionId, player);
         client.send("init", { sessionId: client.sessionId });
         this.sendPartyState(client);
+        this.sendInventoryState(client);
+        this.sendSkillState(client, Date.now());
+        this.sendQuestState(client);
+        this.sendNpcDialogState(client);
     }
 
     onLeave(client: Client, _consented: boolean) {
@@ -271,15 +505,7 @@ export class GameRoom extends Room<GameState> {
                 now,
                 this.physicsSystem
             );
-
-            combatResult.events.forEach((evt) => this.broadcast("combatEvent", evt));
-            combatResult.died.forEach(({ sessionId, killerId, targetName, wasMob, expReward, goldReward }) => {
-                if (wasMob) {
-                    this.distributeMobRewards(killerId, targetName, expReward, goldReward);
-                }
-                this.combatSystem.clearTargetForAll(sessionId, this.state.players);
-                this.broadcast("playerDied", { sessionId });
-            });
+            this.processCombatResult(combatResult);
 
             const respawned = this.combatSystem.processRespawns(this.state.players, now);
             respawned.forEach((sessionId) => {
@@ -299,6 +525,12 @@ export class GameRoom extends Room<GameState> {
                 this.broadcastSnapshot();
                 this.broadcastPartyStates();
             }
+
+            this.ownerStateAccumulator += deltaTime;
+            if (this.ownerStateAccumulator >= OWNER_STATE_MS) {
+                this.ownerStateAccumulator = 0;
+                this.broadcastOwnerStates(now);
+            }
         } catch (error) {
             console.error(`[Room ${this.roomId}] update failed`, error);
         }
@@ -309,6 +541,8 @@ export class GameRoom extends Room<GameState> {
             name: string;
             isMob: boolean;
             mobKind: string;
+            isNpc: boolean;
+            npcKind: string;
             x: number;
             y: number;
             z: number;
@@ -339,6 +573,8 @@ export class GameRoom extends Room<GameState> {
                 name: player.name,
                 isMob: player.isMob,
                 mobKind: player.mobKind,
+                isNpc: player.isNpc,
+                npcKind: player.npcKind,
                 x: player.x,
                 y: player.y,
                 z: player.z,
@@ -372,14 +608,74 @@ export class GameRoom extends Room<GameState> {
         this.clients.forEach((client) => this.sendPartyState(client));
     }
 
+    private broadcastOwnerStates(now: number) {
+        this.clients.forEach((client) => {
+            this.sendSkillState(client, now);
+            this.sendQuestState(client);
+            this.sendNpcDialogState(client);
+        });
+    }
+
     private sendPartyState(client: Client) {
         client.send("partyState", this.partySystem.getPartyStateFor(client.sessionId, this.state.players));
+    }
+
+    private sendInventoryState(client: Client) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player) return;
+        client.send("inventoryState", this.inventorySystem.getInventoryState(player));
+    }
+
+    private sendSkillState(client: Client, now: number) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player || player.isMob || player.isNpc) return;
+        client.send("skillState", this.skillSystem.getSkillState(player, now));
+    }
+
+    private sendQuestState(client: Client) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player || player.isMob || player.isNpc) return;
+        client.send("questState", this.questSystem.getQuestState(player));
+    }
+
+    private sendNpcDialogState(client: Client) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player || player.isMob || player.isNpc) return;
+
+        this.npcSystem.ensureInteractionStillValid(player, this.state.players);
+        client.send(
+            "npcDialogState",
+            this.npcSystem.buildDialogState(
+                player,
+                this.state.players,
+                this.questSystem,
+                this.shopSystem
+            )
+        );
     }
 
     private sendPartyNotice(sessionId: string, kind: "info" | "error", message: string) {
         const client = this.clients.find((candidate) => candidate.sessionId === sessionId);
         if (!client) return;
         client.send("partyNotice", { kind, message });
+    }
+
+    private sendInventoryNotice(sessionId: string, kind: "info" | "error", message: string) {
+        const client = this.findClient(sessionId);
+        if (!client) return;
+        client.send("inventoryNotice", { kind, message });
+    }
+
+    private sendSkillNotice(sessionId: string, kind: "info" | "error", message: string) {
+        const client = this.findClient(sessionId);
+        if (!client) return;
+        client.send("skillNotice", { kind, message });
+    }
+
+    private sendNpcNotice(sessionId: string, kind: "info" | "error", message: string) {
+        const client = this.findClient(sessionId);
+        if (!client) return;
+        client.send("npcNotice", { kind, message });
     }
 
     private notifyPartyMembers(memberId: string, message: string) {
@@ -392,11 +688,12 @@ export class GameRoom extends Room<GameState> {
     private distributeMobRewards(
         killerId: string,
         targetName: string,
+        mobKind: string,
         expReward: number,
         goldReward: number
     ) {
         const killer = this.state.players.get(killerId);
-        if (!killer || killer.isMob) return;
+        if (!killer || killer.isMob || killer.isNpc) return;
 
         const recipients = this.partySystem.getRewardRecipients(
             killerId,
@@ -408,10 +705,11 @@ export class GameRoom extends Room<GameState> {
         const expShares = this.splitIntegerReward(expReward, recipients.length);
         const goldShares = this.splitIntegerReward(goldReward, recipients.length);
         const shared = recipients.length > 1;
+        const now = Date.now();
 
         recipients.forEach((sessionId, index) => {
             const player = this.state.players.get(sessionId);
-            if (!player || player.isMob) return;
+            if (!player || player.isMob || player.isNpc) return;
 
             const expShare = expShares[index] ?? 0;
             const goldShare = goldShares[index] ?? 0;
@@ -431,7 +729,40 @@ export class GameRoom extends Room<GameState> {
                 const suffix = shared ? " (party share)" : "";
                 this.sendPartyNotice(sessionId, "info", `${parts.join(" ")} from ${targetName}${suffix}.`);
             }
+
+            const recipientClient = this.findClient(sessionId);
+            if (recipientClient) {
+                const questChanged = this.questSystem.registerMobKill(player, mobKind);
+                this.sendSkillState(recipientClient, now);
+                if (questChanged) {
+                    this.sendQuestState(recipientClient);
+                    this.sendNpcDialogState(recipientClient);
+                }
+            }
         });
+
+        const lootResult = this.inventorySystem.grantMobLoot(killer, mobKind);
+        if (!lootResult?.info) return;
+
+        const killerClient = this.clients.find((candidate) => candidate.sessionId === killerId);
+        if (!killerClient) return;
+
+        this.sendInventoryState(killerClient);
+        this.sendInventoryNotice(killerId, "info", lootResult.info);
+    }
+
+    private processCombatResult(combatResult: CombatResult) {
+        combatResult.events.forEach((event) => this.broadcast("combatEvent", event));
+
+        combatResult.died.forEach(
+            ({ sessionId, killerId, targetName, wasMob, mobKind, expReward, goldReward }) => {
+                if (wasMob) {
+                    this.distributeMobRewards(killerId, targetName, mobKind, expReward, goldReward);
+                }
+                this.combatSystem.clearTargetForAll(sessionId, this.state.players);
+                this.broadcast("playerDied", { sessionId });
+            }
+        );
     }
 
     private splitIntegerReward(total: number, recipients: number): number[] {
@@ -484,5 +815,17 @@ export class GameRoom extends Room<GameState> {
         const bat = new Player();
         this.statsSystem.initializeMob(bat, "bat", 15, 7);
         this.state.players.set("mob:bat:1", bat);
+    }
+
+    private findClient(sessionId: string): Client | undefined {
+        return this.clients.find((candidate) => candidate.sessionId === sessionId);
+    }
+
+    private getActiveNpc(player: Player): Player | null {
+        this.npcSystem.ensureInteractionStillValid(player, this.state.players);
+        if (!player.activeNpcId) return null;
+
+        const npc = this.state.players.get(player.activeNpcId);
+        return npc && npc.isNpc ? npc : null;
     }
 }

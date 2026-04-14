@@ -1,17 +1,27 @@
 import Phaser from "phaser";
 import * as Colyseus from "colyseus.js";
 import { HudManager } from "../ui/HudOverlay";
+import { ChatInputController } from "../ui/components/ChatInput";
 import type {
     AllocatableStat,
     HudPlayerData,
+    HotbarActionId,
+    HudToastKind,
+    InventoryStateData,
+    NpcDialogStateData,
     OnlinePlayerData,
     PartyStateData,
+    QuestStateData,
+    SkillStateData,
+    TargetFrameData,
 } from "../ui/HudOverlay";
 
 interface EntitySnapshot extends HudPlayerData {
     name: string;
     isMob: boolean;
     mobKind: string;
+    isNpc: boolean;
+    npcKind: string;
     x: number;
     y: number;
     z: number;
@@ -38,6 +48,21 @@ interface PartyNotice {
     message: string;
 }
 
+interface InventoryNotice {
+    kind: "info" | "error";
+    message: string;
+}
+
+interface SkillNotice {
+    kind: "info" | "error";
+    message: string;
+}
+
+interface NpcNotice {
+    kind: "info" | "error";
+    message: string;
+}
+
 interface TrackedEntity {
     sessionId: string;
     snapshot: EntitySnapshot;
@@ -48,6 +73,7 @@ interface TrackedEntity {
     head: Phaser.GameObjects.Arc;
     headRing: Phaser.GameObjects.Arc;
     healthBar: Phaser.GameObjects.Graphics;
+    nameLabel: Phaser.GameObjects.Text;
     targetRing: Phaser.GameObjects.Ellipse | null;
     chatBubble: Phaser.GameObjects.Container | null;
     chatBubbleTimer: ReturnType<typeof setTimeout> | null;
@@ -74,8 +100,8 @@ export class GameScene extends Phaser.Scene {
     private client: Colyseus.Client | null = null;
     private room: Colyseus.Room | null = null;
     private hudManager: HudManager | null = null;
+    private chatController: ChatInputController | null = null;
     private statusText: Phaser.GameObjects.Text | null = null;
-    private noticeText: Phaser.GameObjects.Text | null = null;
     private cursors: Phaser.Types.Input.Keyboard.CursorKeys | null = null;
     private moveKeys: {
         up: Phaser.Input.Keyboard.Key;
@@ -89,9 +115,6 @@ export class GameScene extends Phaser.Scene {
     private myTargetId = "";
     private isRoomActive = false;
     private lastMoveInput = { x: 0, y: 0 };
-
-    private chatWrapper: HTMLDivElement | null = null;
-    private chatInput: HTMLInputElement | null = null;
     private chatOpen = false;
 
     private readonly tileWidth = 64;
@@ -125,17 +148,7 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
-        this.noticeText = this.add.text(10, 62, "", {
-            fontSize: "11px",
-            color: "#ffe17a",
-            backgroundColor: "#00000066",
-            padding: { x: 8, y: 4 },
-        })
-            .setScrollFactor(0)
-            .setDepth(2000)
-            .setVisible(false);
-
-        this.add.text(10, 36, "Enter chat | WASD move | Space jump", {
+        this.add.text(10, 36, "Enter chat | WASD move | Space jump | Click NPC to trade | C/I/P/K/L panels | Esc close", {
             fontSize: "11px",
             color: "#88ffaa99",
             fontFamily: "monospace",
@@ -165,6 +178,33 @@ export class GameScene extends Phaser.Scene {
             onDeclinePartyInvite: (partyId: string) => {
                 this.safeSend("partyDeclineInvite", { partyId });
             },
+            onEquipInventoryItem: (tab, index) => {
+                this.safeSend("inventoryEquip", { tab, index });
+            },
+            onUnequipInventoryItem: (slot) => {
+                this.safeSend("inventoryUnequip", { slot });
+            },
+            onUseInventoryItem: (tab, index) => {
+                this.safeSend("inventoryUse", { tab, index });
+            },
+            onCloseNpcDialog: () => {
+                this.safeSend("npcClose");
+            },
+            onBuyShopItem: (itemId: string) => {
+                this.safeSend("shopBuy", { itemId });
+            },
+            onSellShopItem: (tab, index) => {
+                this.safeSend("shopSell", { tab, index });
+            },
+            onAcceptQuest: (questId: string) => {
+                this.safeSend("questAccept", { questId });
+            },
+            onClaimQuest: (questId: string) => {
+                this.safeSend("questClaim", { questId });
+            },
+            onTriggerHotbarAction: (actionId: HotbarActionId) => {
+                this.handleHotbarAction(actionId);
+            },
         });
 
         try {
@@ -175,15 +215,17 @@ export class GameScene extends Phaser.Scene {
             this.isRoomActive = true;
             this.statusText.setText(`Connected ${this.room.sessionId.slice(0, 8)}`);
             this.hudManager.setLocalSessionId(this.mySessionId);
+            this.hudManager.showToast("Connected to game room.", "info");
         } catch (error) {
             const message = error instanceof Error ? error.message : "Could not connect to server";
             this.statusText?.setText(`Error: ${message}`);
+            this.hudManager?.showToast(message, "error");
             console.error(error);
             return;
         }
 
         this.registerRoomHandlers();
-        this.createChatInput();
+        this.createChatController();
         this.registerInputHandlers();
     }
 
@@ -213,12 +255,14 @@ export class GameScene extends Phaser.Scene {
         this.room.onError((code, message) => {
             this.isRoomActive = false;
             this.statusText?.setText(`Room error ${code}`);
+            this.showNotice(message || `Room error ${code}`, "error");
             console.error("[Room error]", code, message);
         });
 
         this.room.onLeave((code) => {
             this.isRoomActive = false;
             this.statusText?.setText(`Disconnected (${code})`);
+            this.showNotice(`Disconnected (${code})`, "error");
             console.error("[Room leave]", code);
         });
 
@@ -241,6 +285,7 @@ export class GameScene extends Phaser.Scene {
 
             target.snapshot.hp = event.targetHp;
             this.updateEntityVisuals(target);
+            this.refreshTargetHud();
         });
 
         this.room.onMessage("playerDied", (data: { sessionId: string }) => {
@@ -250,6 +295,7 @@ export class GameScene extends Phaser.Scene {
             entity.snapshot.hp = 0;
             entity.snapshot.isKnockedDown = false;
             this.updateEntityVisuals(entity);
+            this.refreshTargetHud();
         });
 
         this.room.onMessage("playerRespawned", (data: { sessionId: string; x: number; y: number; z: number }) => {
@@ -263,6 +309,7 @@ export class GameScene extends Phaser.Scene {
             entity.snapshot.groundZ = this.getGroundHeight(data.x, data.y);
             entity.snapshot.z = data.z;
             this.updateEntityVisuals(entity);
+            this.refreshTargetHud();
         });
 
         this.room.onMessage("playerLeft", (data: { sessionId: string }) => {
@@ -278,14 +325,74 @@ export class GameScene extends Phaser.Scene {
             this.hudManager?.updatePartyState(state);
         });
 
+        this.room.onMessage("inventoryState", (state: InventoryStateData) => {
+            this.hudManager?.updateInventoryState(state);
+        });
+
+        this.room.onMessage("skillState", (state: SkillStateData) => {
+            this.hudManager?.updateSkillState(state);
+        });
+
+        this.room.onMessage("questState", (state: QuestStateData) => {
+            this.hudManager?.updateQuestState(state);
+        });
+
+        this.room.onMessage("npcDialogState", (state: NpcDialogStateData) => {
+            this.hudManager?.updateNpcDialogState(state);
+        });
+
         this.room.onMessage("partyNotice", (notice: PartyNotice) => {
-            this.showNotice(notice.message, notice.kind === "error" ? "#ff8a80" : "#ffe17a");
+            this.showNotice(notice.message, this.toToastKind(notice));
+        });
+
+        this.room.onMessage("inventoryNotice", (notice: InventoryNotice) => {
+            this.showNotice(notice.message, notice.kind === "error" ? "error" : "info");
+        });
+
+        this.room.onMessage("skillNotice", (notice: SkillNotice) => {
+            this.showNotice(notice.message, notice.kind === "error" ? "error" : "info");
+        });
+
+        this.room.onMessage("npcNotice", (notice: NpcNotice) => {
+            this.showNotice(notice.message, notice.kind === "error" ? "error" : "info");
         });
     }
 
     private registerInputHandlers() {
         this.input.keyboard?.on("keydown-ENTER", () => {
             if (!this.chatOpen) this.openChat();
+        });
+
+        this.input.keyboard?.on("keydown-ESC", (event: KeyboardEvent) => {
+            event.preventDefault();
+
+            if (this.chatOpen) {
+                this.closeChat();
+                return;
+            }
+
+            if (this.hudManager?.closeAllWindows()) {
+                return;
+            }
+
+            if (this.myTargetId) {
+                const target = this.entities.get(this.myTargetId);
+                if (target) this.updateTargetRing(target, false);
+                this.myTargetId = "";
+                this.hudManager?.updateTarget(null);
+                this.safeSend("clearTarget");
+            }
+        });
+
+        this.input.keyboard?.on("keydown", (event: KeyboardEvent) => {
+            if (this.chatOpen) return;
+            if (this.hudManager?.handleHotbarKey(event.key)) {
+                event.preventDefault();
+                return;
+            }
+            if (this.hudManager?.handleWindowHotkey(event.key)) {
+                event.preventDefault();
+            }
         });
 
         this.input.keyboard?.on("keydown-SPACE", (event: KeyboardEvent) => {
@@ -371,6 +478,7 @@ export class GameScene extends Phaser.Scene {
         });
 
         this.syncLocalTargetRing();
+        this.refreshTargetHud();
 
         const local = this.entities.get(this.mySessionId);
         if (local) this.hudManager?.updateLocalPlayer(local.snapshot);
@@ -387,9 +495,15 @@ export class GameScene extends Phaser.Scene {
         const headRing = this.add.circle(0, -38, 10);
         headRing.setStrokeStyle(1.5, palette.stroke);
         headRing.setFillStyle(0, 0);
-
+        const nameLabel = this.add.text(0, -66, snapshot.name, {
+            fontSize: "10px",
+            fontFamily: "monospace",
+            color: this.getEntityLabelColor(snapshot, sessionId),
+            stroke: "#000000",
+            strokeThickness: 2,
+        }).setOrigin(0.5);
         const healthBar = this.add.graphics();
-        const art = this.add.container(0, 0, [body, head, headRing, healthBar]);
+        const art = this.add.container(0, 0, [body, head, headRing, healthBar, nameLabel]);
         const container = this.add.container(ground.x, ground.y, [shadow, art]);
         container.setDepth(snapshot.x + snapshot.y);
 
@@ -403,6 +517,7 @@ export class GameScene extends Phaser.Scene {
             head,
             headRing,
             healthBar,
+            nameLabel,
             targetRing: null,
             chatBubble: null,
             chatBubbleTimer: null,
@@ -415,6 +530,10 @@ export class GameScene extends Phaser.Scene {
             pointer.event.stopPropagation();
             const entity = this.entities.get(sessionId);
             if (!entity || entity.snapshot.isDead || sessionId === this.mySessionId) return;
+            if (entity.snapshot.isNpc) {
+                this.safeSend("interactNpc", { npcId: sessionId });
+                return;
+            }
             this.safeSend("setTarget", { targetId: sessionId });
         });
 
@@ -439,6 +558,7 @@ export class GameScene extends Phaser.Scene {
 
         if (this.myTargetId === sessionId) {
             this.myTargetId = "";
+            this.hudManager?.updateTarget(null);
         }
 
         entity.container.destroy();
@@ -500,28 +620,38 @@ export class GameScene extends Phaser.Scene {
     }
 
     private updateEntityPose(entity: TrackedEntity) {
-        const { snapshot, body, head, headRing, art } = entity;
+        const { snapshot, body, head, headRing, art, nameLabel } = entity;
         const aliveAlpha = snapshot.isDead ? 0.28 : 1;
 
         body.setAlpha(aliveAlpha);
         head.setAlpha(aliveAlpha);
         headRing.setAlpha(snapshot.isDead ? 0.2 : 1);
+        nameLabel.setAlpha(snapshot.isDead ? 0.45 : 1);
+        nameLabel.setText(snapshot.name);
+        nameLabel.setColor(this.getEntityLabelColor(snapshot, entity.sessionId));
 
         if (snapshot.isKnockedDown) {
             art.angle = 84;
             body.y = -10;
             head.y = -16;
             headRing.y = -16;
+            nameLabel.y = -34;
         } else {
             art.angle = 0;
             body.y = -18;
             head.y = -38;
             headRing.y = -38;
+            nameLabel.y = -66;
         }
     }
 
     private updateHealthBar(entity: TrackedEntity) {
         const graphics = entity.healthBar;
+        if (entity.snapshot.isNpc) {
+            graphics.clear();
+            return;
+        }
+
         const { hp, maxHp } = entity.snapshot;
         const ratio = maxHp > 0 ? Phaser.Math.Clamp(hp / maxHp, 0, 1) : 0;
 
@@ -552,6 +682,10 @@ export class GameScene extends Phaser.Scene {
             fill = 0x00ff88;
             stroke = 0x009944;
             hoverFill = 0x33ffaa;
+        } else if (snapshot.isNpc) {
+            fill = 0xf1c470;
+            stroke = 0x9b6b24;
+            hoverFill = 0xffdda1;
         } else if (snapshot.isMob && snapshot.mobKind === "slime") {
             fill = 0x7dff5b;
             stroke = 0x2e8d2a;
@@ -567,6 +701,13 @@ export class GameScene extends Phaser.Scene {
             stroke,
             hoverFill,
         };
+    }
+
+    private getEntityLabelColor(snapshot: EntitySnapshot, sessionId: string): string {
+        if (sessionId === this.mySessionId) return "#7ae9a5";
+        if (snapshot.isNpc) return "#f1c470";
+        if (snapshot.isMob) return "#84c9ff";
+        return "#efe6d0";
     }
 
     private spawnDamageNumber(x: number, y: number, damage: number, effect: CombatEffect) {
@@ -601,7 +742,7 @@ export class GameScene extends Phaser.Scene {
         const players: OnlinePlayerData[] = [];
 
         this.entities.forEach((entity, sessionId) => {
-            if (entity.snapshot.isMob || sessionId === this.mySessionId) return;
+            if (entity.snapshot.isMob || entity.snapshot.isNpc || sessionId === this.mySessionId) return;
             players.push({
                 sessionId,
                 name: entity.snapshot.name,
@@ -612,24 +753,8 @@ export class GameScene extends Phaser.Scene {
         return players;
     }
 
-    private showNotice(message: string, color: string) {
-        if (!this.noticeText) return;
-
-        this.noticeText.setText(message);
-        this.noticeText.setColor(color);
-        this.noticeText.setAlpha(1);
-        this.noticeText.setVisible(true);
-
-        this.tweens.killTweensOf(this.noticeText);
-        this.tweens.add({
-            targets: this.noticeText,
-            alpha: 0,
-            duration: 2200,
-            ease: "Quad.Out",
-            onComplete: () => {
-                this.noticeText?.setVisible(false);
-            },
-        });
+    private showNotice(message: string, kind: HudToastKind = "info") {
+        this.hudManager?.showToast(message, kind);
     }
 
     private spawnClickRipple(x: number, y: number) {
@@ -700,92 +825,32 @@ export class GameScene extends Phaser.Scene {
         }, 5000);
     }
 
-    private createChatInput() {
-        this.chatWrapper?.remove();
-        document.getElementById("chat-input-wrapper")?.remove();
-
-        const wrapper = document.createElement("div");
-        wrapper.id = "chat-input-wrapper";
-        Object.assign(wrapper.style, {
-            position: "fixed",
-            bottom: "20px",
-            left: "50%",
-            transform: "translateX(-50%)",
-            display: "none",
-            alignItems: "center",
-            gap: "8px",
-            zIndex: "9999",
+    private createChatController() {
+        this.chatController?.destroy();
+        this.chatController = new ChatInputController({
+            onSubmit: (text: string) => {
+                this.safeSend("chat", { text });
+            },
+            onStateChange: (open: boolean) => {
+                this.chatOpen = open;
+                if (this.input.keyboard) this.input.keyboard.enabled = !open;
+            },
         });
-
-        const hint = document.createElement("span");
-        hint.textContent = "say:";
-        Object.assign(hint.style, {
-            color: "#88ffaa",
-            fontFamily: "monospace",
-            fontSize: "13px",
-        });
-
-        const input = document.createElement("input");
-        Object.assign(input.style, {
-            background: "#0d1f0d",
-            border: "1px solid #44ff88",
-            borderRadius: "4px",
-            color: "#eeffee",
-            fontFamily: "monospace",
-            fontSize: "13px",
-            padding: "4px 10px",
-            outline: "none",
-            width: "280px",
-        });
-        input.maxLength = 100;
-        input.placeholder = "Type and press Enter...";
-
-        input.addEventListener("keydown", (event) => {
-            event.stopPropagation();
-
-            if (event.key === "Enter") {
-                const text = input.value.trim();
-                if (text) this.safeSend("chat", { text });
-                this.closeChat();
-                return;
-            }
-
-            if (event.key === "Escape") {
-                this.closeChat();
-            }
-        });
-
-        wrapper.appendChild(hint);
-        wrapper.appendChild(input);
-        document.body.appendChild(wrapper);
-
-        this.chatWrapper = wrapper;
-        this.chatInput = input;
     }
 
     private openChat() {
-        if (!this.chatInput || !this.chatWrapper) return;
-        this.chatOpen = true;
-        this.chatWrapper.style.display = "flex";
-        this.chatInput.value = "";
-        if (this.input.keyboard) this.input.keyboard.enabled = false;
-        this.chatInput.focus();
+        this.chatController?.openChat();
     }
 
     private closeChat() {
-        if (!this.chatInput || !this.chatWrapper) return;
-        this.chatOpen = false;
-        this.chatWrapper.style.display = "none";
-        this.chatInput.blur();
-        if (this.input.keyboard) this.input.keyboard.enabled = true;
+        this.chatController?.close();
     }
 
     private handleSceneShutdown() {
         this.isRoomActive = false;
         this.closeChat();
-        this.chatWrapper?.remove();
-        this.chatWrapper = null;
-        this.chatInput = null;
+        this.chatController?.destroy();
+        this.chatController = null;
         this.hudManager?.destroy();
         this.hudManager = null;
 
@@ -947,6 +1012,8 @@ export class GameScene extends Phaser.Scene {
             name: this.readString(incoming.name, fallback.name),
             isMob: this.readBoolean(incoming.isMob, fallback.isMob),
             mobKind: this.readString(incoming.mobKind, fallback.mobKind),
+            isNpc: this.readBoolean(incoming.isNpc, fallback.isNpc),
+            npcKind: this.readString(incoming.npcKind, fallback.npcKind),
             x: this.readNumber(incoming.x, fallback.x),
             y: this.readNumber(incoming.y, fallback.y),
             z: this.readNumber(incoming.z, fallback.z),
@@ -978,6 +1045,8 @@ export class GameScene extends Phaser.Scene {
             name: "Player",
             isMob: false,
             mobKind: "",
+            isNpc: false,
+            npcKind: "",
             x: 0,
             y: 0,
             z: 0,
@@ -1014,5 +1083,57 @@ export class GameScene extends Phaser.Scene {
 
     private readString(value: unknown, fallback: string): string {
         return typeof value === "string" ? value : fallback;
+    }
+
+    private refreshTargetHud() {
+        this.hudManager?.updateTarget(this.getCurrentTargetData());
+    }
+
+    private getCurrentTargetData(): TargetFrameData | null {
+        if (!this.myTargetId) return null;
+
+        const target = this.entities.get(this.myTargetId);
+        if (!target || target.snapshot.isDead || target.snapshot.isNpc) return null;
+
+        return {
+            sessionId: target.sessionId,
+            name: target.snapshot.name,
+            level: target.snapshot.level,
+            hp: target.snapshot.hp,
+            maxHp: target.snapshot.maxHp,
+            isMob: target.snapshot.isMob,
+            mobKind: target.snapshot.mobKind,
+        };
+    }
+
+    private toToastKind(notice: PartyNotice): HudToastKind {
+        if (notice.kind === "error") return "error";
+        if (/(\+?\d+\s+EXP|\+?\d+\s+gold)/i.test(notice.message)) return "reward";
+        return "info";
+    }
+
+    private handleHotbarAction(actionId: HotbarActionId) {
+        switch (actionId) {
+            case "power-strike":
+            case "rising-uppercut":
+            case "guardian-pulse":
+                this.safeSend("skillUse", { skillId: actionId });
+                return;
+            case "clear-target":
+                if (!this.myTargetId) {
+                    this.showNotice("No active target to clear.", "error");
+                    return;
+                }
+
+                const target = this.entities.get(this.myTargetId);
+                if (target) this.updateTargetRing(target, false);
+                this.myTargetId = "";
+                this.hudManager?.updateTarget(null);
+                this.safeSend("clearTarget");
+                this.showNotice("Target cleared.", "info");
+                return;
+            default:
+                return;
+        }
     }
 }

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import './style.css';
+import './ui/ui.css';
 import { GameScene } from './scenes/GameScene';
 
 const config: Phaser.Types.Core.GameConfig = {

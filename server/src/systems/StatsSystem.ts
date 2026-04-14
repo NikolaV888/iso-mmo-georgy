@@ -1,4 +1,5 @@
 import { GameConfig } from "../config/GameConfig";
+import { getEquipmentBonuses } from "../config/ItemCatalog";
 import { Player } from "../rooms/schema/GameState";
 import { TerrainSystem } from "./TerrainSystem";
 
@@ -23,6 +24,8 @@ export class StatsSystem {
         player.name = name;
         player.isMob = false;
         player.mobKind = "";
+        player.isNpc = false;
+        player.npcKind = "";
         player.canFly = false;
         player.isFlying = false;
         player.expReward = 0;
@@ -45,6 +48,8 @@ export class StatsSystem {
     initializeMob(player: Player, kind: "slime" | "bat", x: number, y: number): void {
         player.isMob = true;
         player.mobKind = kind;
+        player.isNpc = false;
+        player.npcKind = "";
         player.bonusStatPoints = 0;
         player.exp = 0;
         player.expToNextLevel = 0;
@@ -94,12 +99,16 @@ export class StatsSystem {
     ): void {
         const oldMaxHp = Math.max(1, player.maxHp || 1);
         const oldHp = player.hp;
+        const bonuses = getEquipmentBonuses(player.equipment);
+        const effectiveStr = player.str + bonuses.str;
+        const effectiveAgi = player.agi + bonuses.agi;
+        const effectiveVit = player.vit + bonuses.vit;
 
-        player.maxHp = 50 + player.level * 10 + player.vit * 8;
-        player.attackDamage = 5 + player.level * 2 + player.str * 2;
-        player.attackSpeed = Math.min(2.5, 0.8 + player.agi * 0.05);
+        player.maxHp = 50 + player.level * 10 + effectiveVit * 8 + bonuses.maxHp;
+        player.attackDamage = 5 + player.level * 2 + effectiveStr * 2 + bonuses.attackDamage;
+        player.attackSpeed = Math.min(2.5, 0.8 + effectiveAgi * 0.05 + bonuses.attackSpeed);
         player.attackRange = GameConfig.PLAYER_ATTACK_RANGE;
-        player.moveSpeed = GameConfig.PLAYER_SPEED + player.agi * 0.08;
+        player.moveSpeed = GameConfig.PLAYER_SPEED + effectiveAgi * 0.08 + bonuses.moveSpeed;
         player.expToNextLevel = this.getExpToNextLevel(player.level);
 
         if (options.refillHp) {
