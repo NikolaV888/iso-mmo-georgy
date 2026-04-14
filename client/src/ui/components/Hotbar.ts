@@ -70,4 +70,8 @@ export class Hotbar {
             button.classList.remove("is-fired");
         }, 220);
     }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
+    }
 }

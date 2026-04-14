@@ -15,15 +15,16 @@ export class QuestTracker {
 
     public updateEntries(entries: QuestEntryData[]) {
         this.list.replaceChildren();
+        const trackedEntries = entries.filter((entry) => entry.phase === "active");
 
-        if (entries.length === 0) {
+        if (trackedEntries.length === 0) {
             this.list.append(
                 createElement("div", "hud-empty", "No tracked quests. Find an NPC to get started.")
             );
             return;
         }
 
-        entries.slice(0, 2).forEach((entry) => {
+        trackedEntries.slice(0, 2).forEach((entry) => {
             const card = createElement("div", "hud-quest-tracker__entry");
             const header = createElement("div", "hud-quest-tracker__entry-title", entry.title);
             const meta = createElement("div", "hud-quest-tracker__entry-meta", entry.status);
@@ -39,5 +40,9 @@ export class QuestTracker {
             card.append(header, meta, objectives);
             this.list.append(card);
         });
+    }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
     }
 }

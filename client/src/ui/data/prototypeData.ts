@@ -289,6 +289,7 @@ export function buildPrototypeQuestEntries(
         {
             id: "first-loop",
             title: "First Loop",
+            phase: "active",
             status: `Lv. ${player.level}`,
             summary: "Hit the first MMO beats so the prototype feels like a living world instead of a tech demo.",
             objectives: [
@@ -304,6 +305,7 @@ export function buildPrototypeQuestEntries(
         {
             id: "build-identity",
             title: "Build Identity",
+            phase: "available",
             status: player.bonusStatPoints > 0 ? "Points ready" : "Stable",
             summary: "Use the live stat hooks to move from placeholder hero toward a reusable class shell.",
             objectives: [

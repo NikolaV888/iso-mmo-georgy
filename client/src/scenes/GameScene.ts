@@ -1,9 +1,9 @@
 import Phaser from "phaser";
 import * as Colyseus from "colyseus.js";
 import { HudManager } from "../ui/HudOverlay";
-import { ChatInputController } from "../ui/components/ChatInput";
 import type {
     AllocatableStat,
+    HudChatTone,
     HudPlayerData,
     HotbarActionId,
     HudToastKind,
@@ -63,6 +63,21 @@ interface NpcNotice {
     message: string;
 }
 
+interface ChatNotice {
+    kind: "info" | "error";
+    message: string;
+}
+
+interface ChatMessagePayload {
+    channel: "say" | "party" | "whisper";
+    sessionId: string;
+    senderName: string;
+    text: string;
+    targetSessionId?: string;
+    targetName?: string;
+    direction?: "incoming" | "outgoing";
+}
+
 interface TrackedEntity {
     sessionId: string;
     snapshot: EntitySnapshot;
@@ -100,7 +115,6 @@ export class GameScene extends Phaser.Scene {
     private client: Colyseus.Client | null = null;
     private room: Colyseus.Room | null = null;
     private hudManager: HudManager | null = null;
-    private chatController: ChatInputController | null = null;
     private statusText: Phaser.GameObjects.Text | null = null;
     private cursors: Phaser.Types.Input.Keyboard.CursorKeys | null = null;
     private moveKeys: {
@@ -202,6 +216,13 @@ export class GameScene extends Phaser.Scene {
             onClaimQuest: (questId: string) => {
                 this.safeSend("questClaim", { questId });
             },
+            onSubmitChat: (channel, text) => {
+                this.handleChatSubmit(channel, text);
+            },
+            onChatFocusChange: (focused) => {
+                this.chatOpen = focused;
+                if (this.input.keyboard) this.input.keyboard.enabled = !focused;
+            },
             onTriggerHotbarAction: (actionId: HotbarActionId) => {
                 this.handleHotbarAction(actionId);
             },
@@ -216,16 +237,17 @@ export class GameScene extends Phaser.Scene {
             this.statusText.setText(`Connected ${this.room.sessionId.slice(0, 8)}`);
             this.hudManager.setLocalSessionId(this.mySessionId);
             this.hudManager.showToast("Connected to game room.", "info");
+            this.logSystemMessage("Connected to game room.", "neutral");
         } catch (error) {
             const message = error instanceof Error ? error.message : "Could not connect to server";
             this.statusText?.setText(`Error: ${message}`);
             this.hudManager?.showToast(message, "error");
+            this.logSystemMessage(message, "error");
             console.error(error);
             return;
         }
 
         this.registerRoomHandlers();
-        this.createChatController();
         this.registerInputHandlers();
     }
 
@@ -255,14 +277,14 @@ export class GameScene extends Phaser.Scene {
         this.room.onError((code, message) => {
             this.isRoomActive = false;
             this.statusText?.setText(`Room error ${code}`);
-            this.showNotice(message || `Room error ${code}`, "error");
+            this.showSystemNotice(message || `Room error ${code}`, "error");
             console.error("[Room error]", code, message);
         });
 
         this.room.onLeave((code) => {
             this.isRoomActive = false;
             this.statusText?.setText(`Disconnected (${code})`);
-            this.showNotice(`Disconnected (${code})`, "error");
+            this.showSystemNotice(`Disconnected (${code})`, "error");
             console.error("[Room leave]", code);
         });
 
@@ -316,9 +338,13 @@ export class GameScene extends Phaser.Scene {
             this.removeEntity(data.sessionId);
         });
 
-        this.room.onMessage("chatMessage", (data: { sessionId: string; text: string }) => {
-            const entity = this.entities.get(data.sessionId);
-            if (entity) this.spawnChatBubble(entity, data.text);
+        this.room.onMessage("chatMessage", (data: ChatMessagePayload) => {
+            if (data.channel === "say") {
+                const entity = this.entities.get(data.sessionId);
+                if (entity) this.spawnChatBubble(entity, data.text);
+            }
+
+            this.handleChatMessage(data);
         });
 
         this.room.onMessage("partyState", (state: PartyStateData) => {
@@ -342,19 +368,23 @@ export class GameScene extends Phaser.Scene {
         });
 
         this.room.onMessage("partyNotice", (notice: PartyNotice) => {
-            this.showNotice(notice.message, this.toToastKind(notice));
+            this.showSystemNotice(notice.message, notice.kind);
         });
 
         this.room.onMessage("inventoryNotice", (notice: InventoryNotice) => {
-            this.showNotice(notice.message, notice.kind === "error" ? "error" : "info");
+            this.showSystemNotice(notice.message, notice.kind);
         });
 
         this.room.onMessage("skillNotice", (notice: SkillNotice) => {
-            this.showNotice(notice.message, notice.kind === "error" ? "error" : "info");
+            this.showSystemNotice(notice.message, notice.kind);
         });
 
         this.room.onMessage("npcNotice", (notice: NpcNotice) => {
-            this.showNotice(notice.message, notice.kind === "error" ? "error" : "info");
+            this.showSystemNotice(notice.message, notice.kind);
+        });
+
+        this.room.onMessage("chatNotice", (notice: ChatNotice) => {
+            this.showSystemNotice(notice.message, notice.kind);
         });
     }
 
@@ -825,32 +855,17 @@ export class GameScene extends Phaser.Scene {
         }, 5000);
     }
 
-    private createChatController() {
-        this.chatController?.destroy();
-        this.chatController = new ChatInputController({
-            onSubmit: (text: string) => {
-                this.safeSend("chat", { text });
-            },
-            onStateChange: (open: boolean) => {
-                this.chatOpen = open;
-                if (this.input.keyboard) this.input.keyboard.enabled = !open;
-            },
-        });
-    }
-
     private openChat() {
-        this.chatController?.openChat();
+        this.hudManager?.focusChatInput();
     }
 
     private closeChat() {
-        this.chatController?.close();
+        this.hudManager?.blurChatInput();
     }
 
     private handleSceneShutdown() {
         this.isRoomActive = false;
         this.closeChat();
-        this.chatController?.destroy();
-        this.chatController = null;
         this.hudManager?.destroy();
         this.hudManager = null;
 
@@ -1087,6 +1102,7 @@ export class GameScene extends Phaser.Scene {
 
     private refreshTargetHud() {
         this.hudManager?.updateTarget(this.getCurrentTargetData());
+        this.hudManager?.setChatWhisperTarget(this.getCurrentWhisperTargetName());
     }
 
     private getCurrentTargetData(): TargetFrameData | null {
@@ -1106,10 +1122,93 @@ export class GameScene extends Phaser.Scene {
         };
     }
 
-    private toToastKind(notice: PartyNotice): HudToastKind {
-        if (notice.kind === "error") return "error";
-        if (/(\+?\d+\s+EXP|\+?\d+\s+gold)/i.test(notice.message)) return "reward";
+    private getCurrentWhisperTarget() {
+        if (!this.myTargetId) return null;
+
+        const target = this.entities.get(this.myTargetId);
+        if (!target || target.snapshot.isDead || target.snapshot.isMob || target.snapshot.isNpc) {
+            return null;
+        }
+
+        return {
+            sessionId: target.sessionId,
+            name: target.snapshot.name,
+        };
+    }
+
+    private getCurrentWhisperTargetName(): string | null {
+        return this.getCurrentWhisperTarget()?.name ?? null;
+    }
+
+    private classifyNoticeKind(message: string, kind: "info" | "error"): HudToastKind {
+        if (kind === "error") return "error";
+        if (/(^|\s)(\+?\d+\s+EXP|\+?\d+\s+gold|looted|purchased|sold|quest complete)/i.test(message)) {
+            return "reward";
+        }
         return "info";
+    }
+
+    private logSystemMessage(message: string, tone: HudChatTone) {
+        this.hudManager?.addChatEntry({
+            channel: "system",
+            author: "System",
+            text: message,
+            tone,
+        });
+    }
+
+    private showSystemNotice(message: string, kind: "info" | "error") {
+        const toastKind = this.classifyNoticeKind(message, kind);
+        this.showNotice(message, toastKind);
+        this.logSystemMessage(message, this.toChatTone(toastKind));
+    }
+
+    private toChatTone(kind: HudToastKind): HudChatTone {
+        if (kind === "error") return "error";
+        if (kind === "reward") return "reward";
+        return "neutral";
+    }
+
+    private handleChatSubmit(channel: "say" | "party" | "whisper", text: string) {
+        if (channel === "whisper") {
+            const target = this.getCurrentWhisperTarget();
+            if (!target) {
+                this.showSystemNotice("Target a player before whispering.", "error");
+                return;
+            }
+
+            this.safeSend("chat", {
+                channel,
+                text,
+                targetSessionId: target.sessionId,
+            });
+            return;
+        }
+
+        this.safeSend("chat", { channel, text });
+    }
+
+    private handleChatMessage(message: ChatMessagePayload) {
+        if (message.channel === "whisper") {
+            const author =
+                message.direction === "outgoing"
+                    ? `To ${message.targetName ?? "target"}`
+                    : `From ${message.senderName}`;
+            this.hudManager?.addChatEntry({
+                channel: "whisper",
+                author,
+                text: message.text,
+                tone: "neutral",
+            });
+            return;
+        }
+
+        this.hudManager?.addChatEntry({
+            channel: message.channel,
+            author: message.senderName,
+            text: message.text,
+            tone: "neutral",
+        });
     }
 
     private handleHotbarAction(actionId: HotbarActionId) {

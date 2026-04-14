@@ -93,6 +93,14 @@ export class InventoryPanel {
         return this.shell.setOpen(open);
     }
 
+    public getRootElement(): HTMLDivElement {
+        return this.shell.getRootElement();
+    }
+
+    public getDragHandleElement(): HTMLDivElement {
+        return this.shell.getDragHandleElement();
+    }
+
     public setGold(gold: number) {
         this.goldLabel.textContent = `${gold.toLocaleString()} gold`;
     }

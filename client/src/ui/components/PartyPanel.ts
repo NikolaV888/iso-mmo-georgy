@@ -81,6 +81,14 @@ export class PartyPanel {
         return this.shell.setOpen(open);
     }
 
+    public getRootElement(): HTMLDivElement {
+        return this.shell.getRootElement();
+    }
+
+    public getDragHandleElement(): HTMLDivElement {
+        return this.shell.getDragHandleElement();
+    }
+
     public setLocalSessionId(sessionId: string) {
         this.localSessionId = sessionId;
         this.render();

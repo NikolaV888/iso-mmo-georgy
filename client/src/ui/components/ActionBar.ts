@@ -43,4 +43,8 @@ export class ActionBar {
         if (!button) return;
         button.classList.toggle("is-active", open);
     }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
+    }
 }

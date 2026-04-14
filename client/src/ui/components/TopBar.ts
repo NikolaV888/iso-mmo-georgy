@@ -45,4 +45,8 @@ export class TopBar {
             `${player.exp} / ${player.expToNextLevel}`
         );
     }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
+    }
 }

@@ -35,6 +35,14 @@ export class SkillPanel {
         return this.shell.setOpen(open);
     }
 
+    public getRootElement(): HTMLDivElement {
+        return this.shell.getRootElement();
+    }
+
+    public getDragHandleElement(): HTMLDivElement {
+        return this.shell.getDragHandleElement();
+    }
+
     public updateEntries(entries: SkillEntryData[]) {
         this.list.replaceChildren();
 

@@ -41,6 +41,14 @@ export class StatsPanel {
         return this.shell.setOpen(open);
     }
 
+    public getRootElement(): HTMLDivElement {
+        return this.shell.getRootElement();
+    }
+
+    public getDragHandleElement(): HTMLDivElement {
+        return this.shell.getDragHandleElement();
+    }
+
     public update(player: HudPlayerData) {
         this.updateLabel("hp", `${player.hp} / ${player.maxHp}`);
         this.updateLabel("damage", String(player.attackDamage));

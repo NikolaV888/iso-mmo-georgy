@@ -41,4 +41,8 @@ export class ToastFeed {
         this.timers.add(fadeTimer);
         this.timers.add(removeTimer);
     }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
+    }
 }

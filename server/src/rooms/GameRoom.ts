@@ -36,6 +36,12 @@ function clampInput(value: unknown): number {
     return Math.max(-1, Math.min(1, value));
 }
 
+type ChatChannel = "say" | "party" | "whisper";
+
+function isChatChannel(value: unknown): value is ChatChannel {
+    return value === "say" || value === "party" || value === "whisper";
+}
+
 export class GameRoom extends Room<GameState> {
     maxClients = 100;
 
@@ -430,7 +436,7 @@ export class GameRoom extends Room<GameState> {
             this.broadcastPartyStates();
         });
 
-        this.onMessage("chat", (client: Client, data: { text: string }) => {
+        this.onMessage("chat", (client: Client, data: { text: string; channel?: string; targetSessionId?: string }) => {
             const sender = this.state.players.get(client.sessionId);
             if (!sender) return;
 
@@ -439,16 +445,24 @@ export class GameRoom extends Room<GameState> {
                 .slice(0, GameConfig.CHAT_MAX_LENGTH);
             if (!text) return;
 
-            this.clients.forEach((otherClient) => {
-                const other = this.state.players.get(otherClient.sessionId);
-                if (!other) return;
+            const channel = isChatChannel(data?.channel) ? data.channel : "say";
 
-                const dx = other.x - sender.x;
-                const dy = other.y - sender.y;
-                if (Math.sqrt(dx * dx + dy * dy) <= GameConfig.CHAT_RANGE) {
-                    otherClient.send("chatMessage", { sessionId: client.sessionId, text });
-                }
-            });
+            if (channel === "party") {
+                this.sendPartyChat(client.sessionId, sender, text);
+                return;
+            }
+
+            if (channel === "whisper") {
+                this.sendWhisperChat(
+                    client.sessionId,
+                    sender,
+                    text,
+                    typeof data?.targetSessionId === "string" ? data.targetSessionId : ""
+                );
+                return;
+            }
+
+            this.sendSayChat(client.sessionId, sender, text);
         });
 
         this.setSimulationInterval((dt: number) => this.update(dt), TICK_MS);
@@ -678,6 +692,12 @@ export class GameRoom extends Room<GameState> {
         client.send("npcNotice", { kind, message });
     }
 
+    private sendChatNotice(sessionId: string, kind: "info" | "error", message: string) {
+        const client = this.findClient(sessionId);
+        if (!client) return;
+        client.send("chatNotice", { kind, message });
+    }
+
     private notifyPartyMembers(memberId: string, message: string) {
         const memberIds = this.partySystem.getPartyMemberIds(memberId);
         memberIds.forEach((sessionId) => {
@@ -827,5 +847,86 @@ export class GameRoom extends Room<GameState> {
 
         const npc = this.state.players.get(player.activeNpcId);
         return npc && npc.isNpc ? npc : null;
+    }
+
+    private sendSayChat(senderId: string, sender: Player, text: string) {
+        this.clients.forEach((otherClient) => {
+            const other = this.state.players.get(otherClient.sessionId);
+            if (!other) return;
+
+            const dx = other.x - sender.x;
+            const dy = other.y - sender.y;
+            if (Math.sqrt(dx * dx + dy * dy) <= GameConfig.CHAT_RANGE) {
+                otherClient.send("chatMessage", {
+                    channel: "say",
+                    sessionId: senderId,
+                    senderName: sender.name,
+                    text,
+                });
+            }
+        });
+    }
+
+    private sendPartyChat(senderId: string, sender: Player, text: string) {
+        const memberIds = this.partySystem.getPartyMemberIds(senderId);
+        if (memberIds.length === 0) {
+            this.sendChatNotice(senderId, "error", "Join a party before using party chat.");
+            return;
+        }
+
+        memberIds.forEach((memberId) => {
+            const client = this.findClient(memberId);
+            if (!client) return;
+            client.send("chatMessage", {
+                channel: "party",
+                sessionId: senderId,
+                senderName: sender.name,
+                text,
+            });
+        });
+    }
+
+    private sendWhisperChat(senderId: string, sender: Player, text: string, targetSessionId: string) {
+        if (!targetSessionId) {
+            this.sendChatNotice(senderId, "error", "Select a player target before whispering.");
+            return;
+        }
+
+        if (targetSessionId === senderId) {
+            this.sendChatNotice(senderId, "error", "You cannot whisper yourself.");
+            return;
+        }
+
+        const target = this.state.players.get(targetSessionId);
+        if (!target || target.isMob || target.isNpc) {
+            this.sendChatNotice(senderId, "error", "That whisper target is not available.");
+            return;
+        }
+
+        const senderClient = this.findClient(senderId);
+        const targetClient = this.findClient(targetSessionId);
+        if (!senderClient || !targetClient) {
+            this.sendChatNotice(senderId, "error", "That player is no longer online.");
+            return;
+        }
+
+        senderClient.send("chatMessage", {
+            channel: "whisper",
+            sessionId: senderId,
+            senderName: sender.name,
+            text,
+            targetSessionId,
+            targetName: target.name,
+            direction: "outgoing",
+        });
+        targetClient.send("chatMessage", {
+            channel: "whisper",
+            sessionId: senderId,
+            senderName: sender.name,
+            text,
+            targetSessionId,
+            targetName: target.name,
+            direction: "incoming",
+        });
     }
 }

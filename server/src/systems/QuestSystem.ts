@@ -18,6 +18,7 @@ interface QuestObjectivePayload {
 interface QuestEntryPayload {
     id: QuestId;
     title: string;
+    phase: "available" | "active" | "ready" | "completed";
     status: string;
     summary: string;
     objectives: QuestObjectivePayload[];
@@ -175,6 +176,13 @@ export class QuestSystem {
         const claimed = this.isQuestClaimed(player, definition.id);
         const progress = this.getQuestProgress(player, definition);
         const npcName = getNpcDefinition(definition.giverNpcKind).name;
+        const phase = claimed
+            ? "completed"
+            : accepted && progress >= definition.requiredKills
+                ? "ready"
+                : accepted
+                    ? "active"
+                    : "available";
 
         let status = "Available";
         if (claimed) {
@@ -190,6 +198,7 @@ export class QuestSystem {
         return {
             id: definition.id,
             title: definition.title,
+            phase,
             status,
             summary: definition.summary,
             objectives: [

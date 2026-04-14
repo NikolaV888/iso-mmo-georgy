@@ -3,6 +3,8 @@ export type InventoryTab = "equip" | "use" | "etc" | "cash";
 export type HudWindowId = "stats" | "pack" | "party" | "skills" | "quests" | "npc";
 export type HudToastKind = "info" | "error" | "reward";
 export type InventoryItemKind = "equipment" | "consumable" | "material" | "cash";
+export type HudChatChannel = "say" | "party" | "whisper" | "system";
+export type HudChatTone = "neutral" | "error" | "reward";
 export type EquipmentSlot =
     | "weapon"
     | "head"
@@ -115,9 +117,12 @@ export interface QuestObjectiveData {
     complete: boolean;
 }
 
+export type QuestPhase = "available" | "active" | "ready" | "completed";
+
 export interface QuestEntryData {
     id: string;
     title: string;
+    phase: QuestPhase;
     status: string;
     summary: string;
     objectives: QuestObjectiveData[];
@@ -126,6 +131,13 @@ export interface QuestEntryData {
 
 export interface QuestStateData {
     entries: QuestEntryData[];
+}
+
+export interface ChatLogEntryData {
+    channel: HudChatChannel;
+    author: string;
+    text: string;
+    tone: HudChatTone;
 }
 
 export interface NpcShopItemData {
@@ -194,4 +206,6 @@ export interface HudCallbacks {
     onSellShopItem?: (tab: InventoryTab, index: number) => void;
     onAcceptQuest?: (questId: string) => void;
     onClaimQuest?: (questId: string) => void;
+    onSubmitChat?: (channel: Exclude<HudChatChannel, "system">, text: string) => void;
+    onChatFocusChange?: (focused: boolean) => void;
 }

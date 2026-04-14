@@ -14,7 +14,7 @@ export class TargetFrame {
     private hpMeter = createMeter("Target HP", "hp");
 
     constructor(host: HTMLElement) {
-        this.root = createElement("div", ["hud-card-shell", "hud-target", "is-hidden"]);
+        this.root = createElement("div", ["hud-card-shell", "hud-target", "hud-target--hidden"]);
         const header = createElement("div", "hud-target__header");
         const identity = createElement("div", "hud-target__identity");
         const meta = createElement("div", "hud-target__meta");
@@ -32,7 +32,7 @@ export class TargetFrame {
 
     public update(target: TargetFrameData | null) {
         if (!target) {
-            this.root.classList.add("is-hidden");
+            this.root.classList.add("hud-target--hidden");
             return;
         }
 
@@ -40,6 +40,10 @@ export class TargetFrame {
         this.tagLabel.textContent = toTargetLabel(target);
         this.levelLabel.textContent = `Lv. ${target.level}`;
         updateMeter(this.hpMeter, target.hp, target.maxHp, `${target.hp} / ${target.maxHp}`);
-        this.root.classList.remove("is-hidden");
+        this.root.classList.remove("hud-target--hidden");
+    }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
     }
 }

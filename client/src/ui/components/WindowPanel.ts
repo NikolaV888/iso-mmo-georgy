@@ -10,6 +10,7 @@ interface WindowPanelOptions {
 export class WindowPanel {
     readonly root: HTMLDivElement;
     readonly body: HTMLDivElement;
+    private readonly header: HTMLDivElement;
     private readonly titleLabel: HTMLDivElement;
     private open = false;
     private readonly onOpenChange?: (open: boolean) => void;
@@ -18,7 +19,7 @@ export class WindowPanel {
         this.root = createElement("div", ["hud-card-shell", "hud-panel", options.panelClass]);
         this.onOpenChange = options.onOpenChange;
 
-        const header = createElement("div", "hud-panel__header");
+        this.header = createElement("div", "hud-panel__header");
         this.titleLabel = createElement("div", "hud-panel__title", options.title);
         const closeButton = createButton("x", ["hud-button", "hud-button--icon"]);
         closeButton.setAttribute("aria-label", `Close ${options.title}`);
@@ -28,8 +29,8 @@ export class WindowPanel {
 
         this.body = createElement("div", "hud-panel__body");
 
-        appendChildren(header, this.titleLabel, closeButton);
-        appendChildren(this.root, header, this.body);
+        appendChildren(this.header, this.titleLabel, closeButton);
+        appendChildren(this.root, this.header, this.body);
 
         host.append(this.root);
         this.setOpen(options.initiallyOpen ?? false);
@@ -45,6 +46,14 @@ export class WindowPanel {
 
     public setTitle(title: string) {
         this.titleLabel.textContent = title;
+    }
+
+    public getRootElement(): HTMLDivElement {
+        return this.root;
+    }
+
+    public getDragHandleElement(): HTMLDivElement {
+        return this.header;
     }
 
     public setOpen(open: boolean): boolean {

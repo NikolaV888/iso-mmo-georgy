@@ -7,7 +7,9 @@ import {
     createEmptySkillState,
 } from "./data/prototypeData";
 import { createElement } from "./dom";
+import { HudLayoutManager } from "./HudLayoutManager";
 import { ActionBar } from "./components/ActionBar";
+import { ChatBox } from "./components/ChatBox";
 import { Hotbar } from "./components/Hotbar";
 import { InventoryPanel } from "./components/InventoryPanel";
 import { NpcDialogPanel } from "./components/NpcDialogPanel";
@@ -21,6 +23,7 @@ import { ToastFeed } from "./components/ToastFeed";
 import { TopBar } from "./components/TopBar";
 import type {
     HudCallbacks,
+    ChatLogEntryData,
     HudPlayerData,
     HotbarActionId,
     HudToastKind,
@@ -48,6 +51,15 @@ const HOTKEY_TO_WINDOW: Record<string, HudWindowId> = {
     p: "party",
 };
 
+const WINDOW_SURFACE_IDS: Record<HudWindowId, string> = {
+    stats: "stats-panel",
+    pack: "inventory-panel",
+    party: "party-panel",
+    skills: "skill-panel",
+    quests: "quest-panel",
+    npc: "npc-dialog-panel",
+};
+
 export class HudManager {
     private root: HTMLDivElement;
     private callbacks: HudCallbacks;
@@ -61,6 +73,7 @@ export class HudManager {
     private topBar: TopBar;
     private targetFrame: TargetFrame;
     private toastFeed: ToastFeed;
+    private chatBox: ChatBox;
     private actionBar: ActionBar;
     private hotbar: Hotbar;
     private statsPanel: StatsPanel;
@@ -70,6 +83,8 @@ export class HudManager {
     private questPanel: QuestPanel;
     private questTracker: QuestTracker;
     private npcDialogPanel: NpcDialogPanel;
+    private layoutManager: HudLayoutManager;
+    private readonly stateSignatures = new Map<string, string>();
     private windows: Record<HudWindowId, WindowSurface>;
 
     constructor(callbacks: HudCallbacks = {}) {
@@ -83,6 +98,7 @@ export class HudManager {
         this.topBar = new TopBar(this.root);
         this.targetFrame = new TargetFrame(this.root);
         this.toastFeed = new ToastFeed(this.root);
+        this.chatBox = new ChatBox(this.root, callbacks);
         this.statsPanel = new StatsPanel(this.root, callbacks);
         this.inventoryPanel = new InventoryPanel(this.root, callbacks);
         this.partyPanel = new PartyPanel(this.root, callbacks);
@@ -106,21 +122,48 @@ export class HudManager {
         this.hotbar = new Hotbar(this.root, (actionId) => {
             this.triggerHotbarAction(actionId);
         });
+        this.layoutManager = new HudLayoutManager();
 
         this.topBar.update(this.playerState);
         this.inventoryPanel.setGold(this.playerState.gold);
         this.inventoryPanel.updateInventoryState(this.inventoryState);
-        this.refreshDerivedPanels();
+        this.skillPanel.updateEntries(this.skillState.skills);
+        this.questPanel.updateEntries(this.questState.entries);
+        this.questTracker.updateEntries(this.questState.entries);
+        this.hotbar.updateEntries(buildHotbarEntries(this.skillState, this.inventoryState));
         this.syncActionBar();
+        this.registerDraggableSurfaces();
     }
 
     public destroy() {
+        this.chatBox.destroy();
+        this.layoutManager.destroy();
         this.toastFeed.destroy();
         this.root.remove();
     }
 
     public setLocalSessionId(sessionId: string) {
         this.partyPanel.setLocalSessionId(sessionId);
+    }
+
+    public focusChatInput() {
+        this.chatBox.focusInput();
+    }
+
+    public blurChatInput() {
+        this.chatBox.blurInput();
+    }
+
+    public isChatFocused(): boolean {
+        return this.chatBox.isFocused();
+    }
+
+    public setChatWhisperTarget(name: string | null) {
+        this.chatBox.setWhisperTarget(name);
+    }
+
+    public addChatEntry(entry: ChatLogEntryData) {
+        this.chatBox.addEntry(entry);
     }
 
     public updateLocalPlayer(player: Partial<HudPlayerData>) {
@@ -145,52 +188,64 @@ export class HudManager {
         this.topBar.update(this.playerState);
         this.statsPanel.update(this.playerState);
         this.inventoryPanel.setGold(this.playerState.gold);
-        this.refreshDerivedPanels();
     }
 
     public updateOnlinePlayers(players: OnlinePlayerData[]) {
-        this.onlinePlayers = players
+        const nextPlayers = players
             .slice()
             .sort((a, b) => a.name.localeCompare(b.name));
+        if (this.shouldSkipStateUpdate("onlinePlayers", nextPlayers)) return;
+
+        this.onlinePlayers = nextPlayers;
         this.partyPanel.updateOnlinePlayers(this.onlinePlayers);
-        this.refreshDerivedPanels();
     }
 
     public updatePartyState(state: Partial<PartyStateData>) {
-        this.partyState = {
+        const nextState: PartyStateData = {
             partyId: this.readNullableString(state.partyId, this.partyState.partyId),
             leaderId: this.readNullableString(state.leaderId, this.partyState.leaderId),
             members: Array.isArray(state.members) ? state.members : this.partyState.members,
             invites: Array.isArray(state.invites) ? state.invites : this.partyState.invites,
         };
+        if (this.shouldSkipStateUpdate("partyState", nextState)) return;
 
+        this.partyState = nextState;
         this.partyPanel.updatePartyState(this.partyState);
-        this.refreshDerivedPanels();
     }
 
     public updateTarget(target: TargetFrameData | null) {
+        if (this.shouldSkipStateUpdate("target", target)) return;
         this.targetFrame.update(target);
     }
 
     public updateInventoryState(state: InventoryStateData) {
+        if (this.shouldSkipStateUpdate("inventoryState", state)) return;
         this.inventoryState = state;
         this.inventoryPanel.updateInventoryState(this.inventoryState);
-        this.refreshDerivedPanels();
+        this.syncHotbar();
     }
 
     public updateSkillState(state: SkillStateData) {
+        if (this.shouldSkipStateUpdate("skillState", state)) return;
         this.skillState = state;
-        this.refreshDerivedPanels();
+        this.skillPanel.updateEntries(this.skillState.skills);
+        this.syncHotbar();
     }
 
     public updateQuestState(state: QuestStateData) {
+        if (this.shouldSkipStateUpdate("questState", state)) return;
         this.questState = state;
-        this.refreshDerivedPanels();
+        this.questPanel.updateEntries(this.questState.entries);
+        this.questTracker.updateEntries(this.questState.entries);
     }
 
     public updateNpcDialogState(state: NpcDialogStateData) {
+        if (this.shouldSkipStateUpdate("npcDialogState", state)) return;
         this.npcDialogPanel.updateState(state);
         this.syncActionBar();
+        if (state.isOpen) {
+            this.layoutManager.promoteSurface("npc-dialog-panel");
+        }
     }
 
     public showToast(message: string, kind: HudToastKind = "info") {
@@ -200,6 +255,9 @@ export class HudManager {
     public toggleWindow(windowId: HudWindowId): boolean {
         const open = this.windows[windowId].toggle();
         this.syncActionBar();
+        if (open) {
+            this.layoutManager.promoteSurface(WINDOW_SURFACE_IDS[windowId]);
+        }
         return open;
     }
 
@@ -227,16 +285,88 @@ export class HudManager {
         return this.hotbar.triggerByKey(key) !== null;
     }
 
-    private refreshDerivedPanels() {
-        this.skillPanel.updateEntries(this.skillState.skills);
-        this.questPanel.updateEntries(this.questState.entries);
-        this.questTracker.updateEntries(this.questState.entries);
+    private syncHotbar() {
         this.hotbar.updateEntries(buildHotbarEntries(this.skillState, this.inventoryState));
     }
 
     private syncActionBar() {
         (Object.keys(this.windows) as HudWindowId[]).forEach((windowId) => {
             this.actionBar.setWindowState(windowId, this.windows[windowId].isOpen());
+        });
+    }
+
+    private registerDraggableSurfaces() {
+        this.layoutManager.registerSurface({
+            id: "topbar",
+            element: this.topBar.getRootElement(),
+            layer: 140,
+        });
+        this.layoutManager.registerSurface({
+            id: "target-frame",
+            element: this.targetFrame.getRootElement(),
+            layer: 150,
+        });
+        this.layoutManager.registerSurface({
+            id: "toast-feed",
+            element: this.toastFeed.getRootElement(),
+            layer: 160,
+        });
+        this.layoutManager.registerSurface({
+            id: "chat-box",
+            element: this.chatBox.getRootElement(),
+            handle: this.chatBox.getDragHandleElement(),
+            layer: 130,
+        });
+        this.layoutManager.registerSurface({
+            id: "action-bar",
+            element: this.actionBar.getRootElement(),
+            layer: 100,
+        });
+        this.layoutManager.registerSurface({
+            id: "hotbar",
+            element: this.hotbar.getRootElement(),
+            layer: 110,
+        });
+        this.layoutManager.registerSurface({
+            id: "quest-tracker",
+            element: this.questTracker.getRootElement(),
+            layer: 145,
+        });
+        this.layoutManager.registerSurface({
+            id: "stats-panel",
+            element: this.statsPanel.getRootElement(),
+            handle: this.statsPanel.getDragHandleElement(),
+            layer: 300,
+        });
+        this.layoutManager.registerSurface({
+            id: "inventory-panel",
+            element: this.inventoryPanel.getRootElement(),
+            handle: this.inventoryPanel.getDragHandleElement(),
+            layer: 300,
+        });
+        this.layoutManager.registerSurface({
+            id: "party-panel",
+            element: this.partyPanel.getRootElement(),
+            handle: this.partyPanel.getDragHandleElement(),
+            layer: 300,
+        });
+        this.layoutManager.registerSurface({
+            id: "skill-panel",
+            element: this.skillPanel.getRootElement(),
+            handle: this.skillPanel.getDragHandleElement(),
+            layer: 300,
+        });
+        this.layoutManager.registerSurface({
+            id: "quest-panel",
+            element: this.questPanel.getRootElement(),
+            handle: this.questPanel.getDragHandleElement(),
+            layer: 300,
+        });
+        this.layoutManager.registerSurface({
+            id: "npc-dialog-panel",
+            element: this.npcDialogPanel.getRootElement(),
+            handle: this.npcDialogPanel.getDragHandleElement(),
+            layer: 320,
         });
     }
 
@@ -269,5 +399,15 @@ export class HudManager {
 
     private readNullableString(value: unknown, fallback: string | null): string | null {
         return typeof value === "string" && value.trim() ? value : fallback;
+    }
+
+    private shouldSkipStateUpdate(key: string, value: unknown): boolean {
+        const signature = JSON.stringify(value);
+        if (this.stateSignatures.get(key) === signature) {
+            return true;
+        }
+
+        this.stateSignatures.set(key, signature);
+        return false;
     }
 }
