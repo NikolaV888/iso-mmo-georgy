@@ -55,6 +55,7 @@ export class SkillSystem {
         player: Player,
         playerSid: string,
         skillId: SkillId,
+        targetSid: string,
         players: MapSchema<Player>,
         now: number,
         physicsSystem: PhysicsSystem,
@@ -71,6 +72,7 @@ export class SkillSystem {
                 return this.usePowerStrike(
                     player,
                     playerSid,
+                    targetSid,
                     players,
                     now,
                     physicsSystem,
@@ -81,6 +83,7 @@ export class SkillSystem {
                 return this.useRisingUppercut(
                     player,
                     playerSid,
+                    targetSid,
                     players,
                     now,
                     physicsSystem,
@@ -135,13 +138,14 @@ export class SkillSystem {
     private usePowerStrike(
         player: Player,
         playerSid: string,
+        targetSid: string,
         players: MapSchema<Player>,
         now: number,
         physicsSystem: PhysicsSystem,
         combatSystem: CombatSystem,
         definition: SkillDefinition
     ): SkillUseResult {
-        const resolvedTarget = this.resolveTarget(player, players);
+        const resolvedTarget = this.resolveTarget(targetSid, players);
         if ("error" in resolvedTarget) return resolvedTarget;
 
         const range = player.attackRange + GameConfig.SKILL_POWER_STRIKE_RANGE_BONUS;
@@ -176,13 +180,14 @@ export class SkillSystem {
     private useRisingUppercut(
         player: Player,
         playerSid: string,
+        targetSid: string,
         players: MapSchema<Player>,
         now: number,
         physicsSystem: PhysicsSystem,
         combatSystem: CombatSystem,
         definition: SkillDefinition
     ): SkillUseResult {
-        const resolvedTarget = this.resolveTarget(player, players);
+        const resolvedTarget = this.resolveTarget(targetSid, players);
         if ("error" in resolvedTarget) return resolvedTarget;
 
         if (!resolvedTarget.target.isGrounded || resolvedTarget.target.isKnockedDown) {
@@ -255,21 +260,20 @@ export class SkillSystem {
     }
 
     private resolveTarget(
-        player: Player,
+        targetSid: string,
         players: MapSchema<Player>
     ): ResolvedTarget | { error: string } {
-        const targetSid = player.combatTargetId.trim();
-        if (!targetSid) {
+        const resolvedTargetSid = targetSid.trim();
+        if (!resolvedTargetSid) {
             return { error: "Select a target first." };
         }
 
-        const target = players.get(targetSid);
-        if (!target || target.isDead) {
-            player.combatTargetId = "";
+        const target = players.get(resolvedTargetSid);
+        if (!target || target.isDead || target.isNpc) {
             return { error: "Your target is no longer available." };
         }
 
-        return { target, targetSid };
+        return { target, targetSid: resolvedTargetSid };
     }
 
     private isTargetInRange(attacker: Player, target: Player, range: number): boolean {

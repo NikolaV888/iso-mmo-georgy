@@ -162,7 +162,7 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
-        this.add.text(10, 36, "Enter chat | WASD move | Space jump | Click NPC to trade | C/E/I/P/K/L panels | Esc close", {
+        this.add.text(10, 36, "Tab cycle target | Enter chat | WASD move | Space jump | Click NPC to trade | C/E/I/P/K/L panels | Esc close", {
             fontSize: "11px",
             color: "#88ffaa99",
             fontFamily: "monospace",
@@ -406,12 +406,14 @@ export class GameScene extends Phaser.Scene {
             }
 
             if (this.myTargetId) {
-                const target = this.entities.get(this.myTargetId);
-                if (target) this.updateTargetRing(target, false);
-                this.myTargetId = "";
-                this.hudManager?.updateTarget(null);
-                this.safeSend("clearTarget");
+                this.clearLocalTarget();
             }
+        });
+
+        this.input.keyboard?.on("keydown-TAB", (event: KeyboardEvent) => {
+            if (this.chatOpen) return;
+            event.preventDefault();
+            this.cycleTarget(event.shiftKey ? -1 : 1);
         });
 
         this.input.keyboard?.on("keydown", (event: KeyboardEvent) => {
@@ -564,7 +566,7 @@ export class GameScene extends Phaser.Scene {
                 this.safeSend("interactNpc", { npcId: sessionId });
                 return;
             }
-            this.safeSend("setTarget", { targetId: sessionId });
+            this.selectTarget(sessionId);
         });
 
         container.on("pointerover", () => {
@@ -587,8 +589,7 @@ export class GameScene extends Phaser.Scene {
         entity.chatBubble?.destroy();
 
         if (this.myTargetId === sessionId) {
-            this.myTargetId = "";
-            this.hudManager?.updateTarget(null);
+            this.clearLocalTarget(false);
         }
 
         entity.container.destroy();
@@ -596,25 +597,15 @@ export class GameScene extends Phaser.Scene {
     }
 
     private syncLocalTargetRing() {
-        const me = this.entities.get(this.mySessionId);
-        const nextTarget = me?.snapshot.combatTargetId ?? "";
-        if (nextTarget === this.myTargetId) return;
-
-        if (this.myTargetId) {
-            const previous = this.entities.get(this.myTargetId);
-            if (previous) this.updateTargetRing(previous, false);
-        }
-
-        this.myTargetId = nextTarget;
         if (!this.myTargetId) return;
 
-        const next = this.entities.get(this.myTargetId);
-        if (!next || next.snapshot.isDead) {
-            this.myTargetId = "";
+        const selected = this.entities.get(this.myTargetId);
+        if (!selected || selected.snapshot.isDead || selected.snapshot.isNpc) {
+            this.clearLocalTarget(false);
             return;
         }
 
-        this.updateTargetRing(next, true);
+        this.updateTargetRing(selected, true);
     }
 
     private updateTargetRing(entity: TrackedEntity, show: boolean) {
@@ -781,6 +772,107 @@ export class GameScene extends Phaser.Scene {
         });
 
         return players;
+    }
+
+    private selectTarget(targetId: string) {
+        const target = this.entities.get(targetId);
+        if (!target || target.snapshot.isDead || target.snapshot.isNpc || targetId === this.mySessionId) {
+            return;
+        }
+
+        if (this.myTargetId === targetId) {
+            this.refreshTargetHud();
+            return;
+        }
+
+        if (this.myTargetId) {
+            const previous = this.entities.get(this.myTargetId);
+            if (previous) this.updateTargetRing(previous, false);
+        }
+
+        this.myTargetId = targetId;
+        this.updateTargetRing(target, true);
+        this.refreshTargetHud();
+    }
+
+    private clearLocalTarget(notifyServer = true) {
+        if (this.myTargetId) {
+            const target = this.entities.get(this.myTargetId);
+            if (target) this.updateTargetRing(target, false);
+        }
+
+        this.myTargetId = "";
+        this.hudManager?.updateTarget(null);
+        this.hudManager?.setChatWhisperTarget(null);
+
+        if (notifyServer) {
+            this.safeSend("clearTarget");
+        }
+    }
+
+    private cycleTarget(direction: 1 | -1) {
+        const candidates = this.getVisibleTargetIds();
+        if (candidates.length === 0) {
+            this.showNotice("No players or mobs on screen to target.", "error");
+            return;
+        }
+
+        const currentIndex = candidates.indexOf(this.myTargetId);
+        const nextIndex =
+            currentIndex < 0
+                ? direction > 0 ? 0 : candidates.length - 1
+                : (currentIndex + direction + candidates.length) % candidates.length;
+
+        this.selectTarget(candidates[nextIndex]);
+    }
+
+    private getVisibleTargetIds(): string[] {
+        const local = this.entities.get(this.mySessionId);
+        if (!local) return [];
+
+        const worldView = this.cameras.main.worldView;
+        const paddedView = new Phaser.Geom.Rectangle(
+            worldView.x - 24,
+            worldView.y - 24,
+            worldView.width + 48,
+            worldView.height + 48
+        );
+
+        return Array.from(this.entities.values())
+            .filter((entity) => {
+                if (entity.sessionId === this.mySessionId) return false;
+                if (entity.snapshot.isDead || entity.snapshot.isNpc) return false;
+                return paddedView.contains(entity.container.x, entity.container.y);
+            })
+            .sort((a, b) => {
+                const distanceA = Phaser.Math.Distance.Between(
+                    a.snapshot.x,
+                    a.snapshot.y,
+                    local.snapshot.x,
+                    local.snapshot.y
+                );
+                const distanceB = Phaser.Math.Distance.Between(
+                    b.snapshot.x,
+                    b.snapshot.y,
+                    local.snapshot.x,
+                    local.snapshot.y
+                );
+
+                if (Math.abs(distanceA - distanceB) > 0.01) {
+                    return distanceA - distanceB;
+                }
+
+                if (Math.abs(a.container.y - b.container.y) > 0.5) {
+                    return a.container.y - b.container.y;
+                }
+
+                if (Math.abs(a.container.x - b.container.x) > 0.5) {
+                    return a.container.x - b.container.x;
+                }
+
+                return a.sessionId.localeCompare(b.sessionId);
+            })
+            .map((entity) => entity.sessionId);
     }
 
     private showNotice(message: string, kind: HudToastKind = "info") {
@@ -1216,7 +1308,10 @@ export class GameScene extends Phaser.Scene {
             case "power-strike":
             case "rising-uppercut":
             case "guardian-pulse":
-                this.safeSend("skillUse", { skillId: actionId });
+                this.safeSend("skillUse", {
+                    skillId: actionId,
+                    targetId: this.myTargetId,
+                });
                 return;
             case "clear-target":
                 if (!this.myTargetId) {
@@ -1224,11 +1319,7 @@ export class GameScene extends Phaser.Scene {
                     return;
                 }
 
-                const target = this.entities.get(this.myTargetId);
-                if (target) this.updateTargetRing(target, false);
-                this.myTargetId = "";
-                this.hudManager?.updateTarget(null);
-                this.safeSend("clearTarget");
+                this.clearLocalTarget();
                 this.showNotice("Target cleared.", "info");
                 return;
             default:

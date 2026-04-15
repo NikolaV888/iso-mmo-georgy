@@ -123,10 +123,7 @@ export class GameRoom extends Room<GameState> {
 
             const target = this.state.players.get(data.targetId);
             if (!target || target.isDead || target.isNpc) return;
-
-            player.combatTargetId = data.targetId;
-            this.npcSystem.closeInteraction(player);
-            this.combatSystem.syncChasingTarget(player, target);
+            // Target selection is now a client-side inspect/skill target, not an auto-engage action.
         });
 
         this.onMessage("clearTarget", (client: Client) => {
@@ -309,7 +306,7 @@ export class GameRoom extends Room<GameState> {
             if (result.info) this.sendNpcNotice(client.sessionId, "info", result.info);
         });
 
-        this.onMessage("skillUse", (client: Client, data: { skillId: string }) => {
+        this.onMessage("skillUse", (client: Client, data: { skillId: string; targetId?: string }) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isMob) return;
             if (!isSkillId(data?.skillId)) return;
@@ -319,6 +316,7 @@ export class GameRoom extends Room<GameState> {
                 player,
                 client.sessionId,
                 data.skillId,
+                typeof data?.targetId === "string" ? data.targetId : "",
                 this.state.players,
                 now,
                 this.physicsSystem,
