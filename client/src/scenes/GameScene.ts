@@ -162,7 +162,7 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
-        this.add.text(10, 36, "Enter chat | WASD move | Space jump | Click NPC to trade | C/I/P/K/L panels | Esc close", {
+        this.add.text(10, 36, "Enter chat | WASD move | Space jump | Click NPC to trade | C/E/I/P/K/L panels | Esc close", {
             fontSize: "11px",
             color: "#88ffaa99",
             fontFamily: "monospace",

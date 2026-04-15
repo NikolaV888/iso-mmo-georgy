@@ -10,6 +10,7 @@ interface ActionBarItem {
 const ACTIONS: ActionBarItem[] = [
     { id: "stats", label: "Stats", hotkey: "C" },
     { id: "pack", label: "Pack", hotkey: "I" },
+    { id: "equipment", label: "Equip", hotkey: "E" },
     { id: "quests", label: "Quests", hotkey: "L" },
     { id: "party", label: "Party", hotkey: "P" },
     { id: "skills", label: "Skills", hotkey: "K" },

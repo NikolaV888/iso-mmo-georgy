@@ -1,67 +1,55 @@
 import { createEmptyInventoryState } from "../data/prototypeData";
 import { createButton, createElement } from "../dom";
 import type {
-    EquipmentSlot,
     HudCallbacks,
     InventoryItem,
     InventoryStateData,
     InventoryTab,
 } from "../types";
+import { ItemTooltip } from "./ItemTooltip";
 import { WindowPanel } from "./WindowPanel";
 
 const SLOT_COUNT = 20;
 
 const TAB_LABELS: Array<[InventoryTab, string]> = [
-    ["equip", "Equip"],
+    ["equip", "Gear"],
     ["use", "Use"],
     ["etc", "ETC"],
     ["cash", "Cash"],
 ];
 
-const EQUIPMENT_SLOTS: Array<[EquipmentSlot, string]> = [
-    ["weapon", "Weapon"],
-    ["head", "Head"],
-    ["chest", "Chest"],
-    ["hands", "Hands"],
-    ["feet", "Feet"],
-    ["accessory", "Accessory"],
-];
-
-type InventorySelection =
-    | { type: "inventory"; tab: InventoryTab; index: number }
-    | { type: "equipment"; slot: EquipmentSlot };
-
 export class InventoryPanel {
     private shell: WindowPanel;
     private callbacks: HudCallbacks;
+    private tooltip: ItemTooltip;
     private inventoryState: InventoryStateData = createEmptyInventoryState();
     private activeTab: InventoryTab = "equip";
-    private selection: InventorySelection = { type: "inventory", tab: "equip", index: 0 };
+    private selection = { tab: "equip" as InventoryTab, index: 0 };
     private tabButtons = new Map<InventoryTab, HTMLButtonElement>();
-    private equipmentGrid: HTMLDivElement;
     private grid: HTMLDivElement;
-    private details: HTMLDivElement;
     private actionRow: HTMLDivElement;
     private goldLabel: HTMLSpanElement;
 
-    constructor(host: HTMLElement, callbacks: HudCallbacks) {
+    constructor(host: HTMLElement, callbacks: HudCallbacks, tooltip: ItemTooltip) {
         this.callbacks = callbacks;
+        this.tooltip = tooltip;
         this.shell = new WindowPanel(host, {
             title: "PACK",
             panelClass: "hud-panel--pack",
         });
 
-        const equipmentSection = createElement("div", "hud-equipment");
-        const equipmentTitle = createElement("div", "hud-section-title", "Loadout");
-        this.equipmentGrid = createElement("div", "hud-equipment__grid");
-        equipmentSection.append(equipmentTitle, this.equipmentGrid);
+        const intro = createElement(
+            "div",
+            "hud-panel-copy",
+            "Hover items for a floating tooltip. Double-click to equip or use them fast."
+        );
 
         const tabs = createElement("div", "hud-tab-row");
         TAB_LABELS.forEach(([tabId, label]) => {
             const button = createButton(label);
             button.addEventListener("click", () => {
                 this.activeTab = tabId;
-                this.selection = { type: "inventory", tab: tabId, index: 0 };
+                this.selection = { tab: tabId, index: 0 };
                 this.render();
             });
             this.tabButtons.set(tabId, button);
@@ -69,7 +57,6 @@ export class InventoryPanel {
         });
 
         this.grid = createElement("div", "hud-grid");
-        this.details = createElement("div", "hud-detail-card", "No items in this tab yet.");
         this.actionRow = createElement("div", "hud-inline-actions");
 
         const footer = createElement("div", "hud-panel-footer");
@@ -77,7 +64,7 @@ export class InventoryPanel {
         this.goldLabel = createElement("span", ["hud-chip", "hud-chip--gold"], "0 gold");
         footer.append(goldTitle, this.goldLabel);
 
-        this.shell.body.append(equipmentSection, tabs, this.grid, this.details, this.actionRow, footer);
+        this.shell.body.append(intro, tabs, this.grid, this.actionRow, footer);
         this.render();
     }
 
@@ -112,40 +99,10 @@ export class InventoryPanel {
     }
 
     private render() {
-        this.renderEquipment();
+        this.tooltip.hide();
         this.renderTabs();
         this.renderInventoryGrid();
         this.renderSelection();
-    }
-
-    private renderEquipment() {
-        this.equipmentGrid.replaceChildren();
-
-        EQUIPMENT_SLOTS.forEach(([slotId, label]) => {
-            const equippedItem = this.inventoryState.equipment[slotId] ?? null;
-            const classes = ["hud-equipment-slot"];
-            if (equippedItem) classes.push("is-filled");
-            if (this.selection.type === "equipment" && this.selection.slot === slotId) {
-                classes.push("is-selected");
-            }
-
-            const button = createElement("button", classes);
-            button.type = "button";
-            button.append(
-                createElement("span", "hud-equipment-slot__label", label),
-                createElement(
-                    "span",
-                    "hud-equipment-slot__value",
-                    equippedItem ? equippedItem.name : "Empty"
-                )
-            );
-            button.addEventListener("click", () => {
-                this.selection = { type: "equipment", slot: slotId };
-                this.render();
-            });
-
-            this.equipmentGrid.append(button);
-        });
     }
 
     private renderTabs() {
@@ -162,11 +119,7 @@ export class InventoryPanel {
             const item = items[index];
             const slotClasses = ["hud-slot"];
             slotClasses.push(item ? "is-filled" : "is-empty");
-            if (
-                this.selection.type === "inventory" &&
-                this.selection.tab === this.activeTab &&
-                this.selection.index === index
-            ) {
+            if (this.selection.tab === this.activeTab && this.selection.index === index) {
                 slotClasses.push("is-selected");
             }
 
@@ -183,8 +136,21 @@ export class InventoryPanel {
                 slot.append(title);
                 if (count) slot.append(count);
                 slot.addEventListener("click", () => {
-                    this.selection = { type: "inventory", tab: this.activeTab, index };
+                    this.selection = { tab: this.activeTab, index };
                     this.render();
+                });
+                slot.addEventListener("dblclick", (event) => {
+                    event.preventDefault();
+                    this.triggerItemAction(this.activeTab, index, item);
+                });
+                slot.addEventListener("pointerenter", (event) => {
+                    this.showTooltip(item, event, this.activeTab);
+                });
+                slot.addEventListener("pointermove", (event) => {
+                    this.tooltip.move(event.clientX, event.clientY);
+                });
+                slot.addEventListener("pointerleave", () => {
+                    this.tooltip.hide();
                 });
             }
 
@@ -197,21 +163,9 @@ export class InventoryPanel {
         const actionButton = this.buildActionButton(selectedItem);
 
         if (!selectedItem) {
-            this.details.textContent = "No item selected.";
             this.actionRow.replaceChildren();
             return;
         }
-
-        const metaParts: string[] = [selectedItem.kind];
-        if (selectedItem.rarity) metaParts.push(selectedItem.rarity);
-        if (selectedItem.statLine) metaParts.push(selectedItem.statLine);
-        if (selectedItem.count > 1) metaParts.push(`stack ${selectedItem.count}`);
-
-        this.details.replaceChildren(
-            createElement("div", "hud-detail-card__title", selectedItem.name),
-            createElement("div", "hud-detail-card__meta", metaParts.join(" | ")),
-            createElement("div", "hud-detail-card__body", selectedItem.description)
-        );
 
         this.actionRow.replaceChildren();
         if (actionButton) this.actionRow.append(actionButton);
@@ -219,24 +173,12 @@ export class InventoryPanel {
 
     private buildActionButton(selectedItem: InventoryItem | null): HTMLButtonElement | null {
         if (!selectedItem) return null;
-
-        if (this.selection.type === "equipment") {
-            const { slot } = this.selection;
-            if (!selectedItem.equipSlot) return null;
-
-            const button = createButton("Unequip");
-            button.addEventListener("click", () => {
-                this.callbacks.onUnequipInventoryItem?.(slot);
-            });
-            return button;
-        }
-
         const { tab, index } = this.selection;
 
         if (selectedItem.kind === "equipment" && selectedItem.equipSlot) {
             const button = createButton("Equip");
             button.addEventListener("click", () => {
-                this.callbacks.onEquipInventoryItem?.(tab, index);
+                this.triggerItemAction(tab, index, selectedItem);
             });
             return button;
         }
@@ -244,7 +186,7 @@ export class InventoryPanel {
         if (selectedItem.kind === "consumable") {
             const button = createButton("Use");
             button.addEventListener("click", () => {
-                this.callbacks.onUseInventoryItem?.(tab, index);
+                this.triggerItemAction(tab, index, selectedItem);
             });
             return button;
         }
@@ -253,23 +195,43 @@ export class InventoryPanel {
     }
 
     private getSelectedItem(): InventoryItem | null {
-        if (this.selection.type === "equipment") {
-            return this.inventoryState.equipment[this.selection.slot] ?? null;
-        }
-
         return this.inventoryState.tabs[this.selection.tab][this.selection.index] ?? null;
     }
 
     private ensureSelectionStillValid() {
-        if (this.selection.type === "equipment") {
-            if (this.inventoryState.equipment[this.selection.slot]) return;
-            this.selection = { type: "inventory", tab: this.activeTab, index: 0 };
-            return;
-        }
-
         const items = this.inventoryState.tabs[this.selection.tab];
         if (items[this.selection.index]) return;
 
-        this.selection = { type: "inventory", tab: this.activeTab, index: 0 };
+        this.selection = { tab: this.activeTab, index: 0 };
+    }
+
+    private triggerItemAction(tab: InventoryTab, index: number, item: InventoryItem) {
+        if (item.kind === "equipment" && item.equipSlot) {
+            this.callbacks.onEquipInventoryItem?.(tab, index);
+            return;
+        }
+
+        if (item.kind === "consumable") {
+            this.callbacks.onUseInventoryItem?.(tab, index);
+        }
+    }
+
+    private showTooltip(item: InventoryItem, event: PointerEvent, tab: InventoryTab) {
+        this.tooltip.show(item, event.clientX, event.clientY, {
+            slotLabel: tab.toUpperCase(),
+            actionHint: this.getItemActionHint(item),
+        });
+    }
+
+    private getItemActionHint(item: InventoryItem): string | undefined {
+        if (item.kind === "equipment" && item.equipSlot) {
+            return "Double-click to equip";
+        }
+
+        if (item.kind === "consumable") {
+            return "Double-click to use";
+        }
+
+        return undefined;
     }
 }

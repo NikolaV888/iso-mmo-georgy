@@ -10,8 +10,10 @@ import { createElement } from "./dom";
 import { HudLayoutManager } from "./HudLayoutManager";
 import { ActionBar } from "./components/ActionBar";
 import { ChatBox } from "./components/ChatBox";
+import { EquipmentPanel } from "./components/EquipmentPanel";
 import { Hotbar } from "./components/Hotbar";
 import { InventoryPanel } from "./components/InventoryPanel";
+import { ItemTooltip } from "./components/ItemTooltip";
 import { NpcDialogPanel } from "./components/NpcDialogPanel";
 import { PartyPanel } from "./components/PartyPanel";
 import { QuestPanel } from "./components/QuestPanel";
@@ -45,6 +47,7 @@ interface WindowSurface {
 
 const HOTKEY_TO_WINDOW: Record<string, HudWindowId> = {
     c: "stats",
+    e: "equipment",
     i: "pack",
     k: "skills",
     l: "quests",
@@ -54,6 +57,7 @@ const HOTKEY_TO_WINDOW: Record<string, HudWindowId> = {
 const WINDOW_SURFACE_IDS: Record<HudWindowId, string> = {
     stats: "stats-panel",
     pack: "inventory-panel",
+    equipment: "equipment-panel",
     party: "party-panel",
     skills: "skill-panel",
     quests: "quest-panel",
@@ -73,11 +77,13 @@ export class HudManager {
     private topBar: TopBar;
     private targetFrame: TargetFrame;
     private toastFeed: ToastFeed;
+    private itemTooltip: ItemTooltip;
     private chatBox: ChatBox;
     private actionBar: ActionBar;
     private hotbar: Hotbar;
     private statsPanel: StatsPanel;
     private inventoryPanel: InventoryPanel;
+    private equipmentPanel: EquipmentPanel;
     private partyPanel: PartyPanel;
     private skillPanel: SkillPanel;
     private questPanel: QuestPanel;
@@ -98,9 +104,11 @@ export class HudManager {
         this.topBar = new TopBar(this.root);
         this.targetFrame = new TargetFrame(this.root);
         this.toastFeed = new ToastFeed(this.root);
+        this.itemTooltip = new ItemTooltip(this.root);
         this.chatBox = new ChatBox(this.root, callbacks);
         this.statsPanel = new StatsPanel(this.root, callbacks);
-        this.inventoryPanel = new InventoryPanel(this.root, callbacks);
+        this.inventoryPanel = new InventoryPanel(this.root, callbacks, this.itemTooltip);
+        this.equipmentPanel = new EquipmentPanel(this.root, callbacks, this.itemTooltip);
         this.partyPanel = new PartyPanel(this.root, callbacks);
         this.skillPanel = new SkillPanel(this.root);
         this.questPanel = new QuestPanel(this.root);
@@ -110,6 +118,7 @@ export class HudManager {
         this.windows = {
             stats: this.statsPanel,
             pack: this.inventoryPanel,
+            equipment: this.equipmentPanel,
             party: this.partyPanel,
             skills: this.skillPanel,
             quests: this.questPanel,
@@ -127,6 +136,7 @@ export class HudManager {
         this.topBar.update(this.playerState);
         this.inventoryPanel.setGold(this.playerState.gold);
         this.inventoryPanel.updateInventoryState(this.inventoryState);
+        this.equipmentPanel.updateInventoryState(this.inventoryState);
         this.skillPanel.updateEntries(this.skillState.skills);
         this.questPanel.updateEntries(this.questState.entries);
         this.questTracker.updateEntries(this.questState.entries);
@@ -222,6 +232,7 @@ export class HudManager {
         if (this.shouldSkipStateUpdate("inventoryState", state)) return;
         this.inventoryState = state;
         this.inventoryPanel.updateInventoryState(this.inventoryState);
+        this.equipmentPanel.updateInventoryState(this.inventoryState);
         this.syncHotbar();
     }
 
@@ -342,6 +353,12 @@ export class HudManager {
             id: "inventory-panel",
             element: this.inventoryPanel.getRootElement(),
             handle: this.inventoryPanel.getDragHandleElement(),
+            layer: 300,
+        });
+        this.layoutManager.registerSurface({
+            id: "equipment-panel",
+            element: this.equipmentPanel.getRootElement(),
+            handle: this.equipmentPanel.getDragHandleElement(),
             layer: 300,
         });
         this.layoutManager.registerSurface({

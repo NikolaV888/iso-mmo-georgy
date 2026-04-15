@@ -1,6 +1,13 @@
 export type AllocatableStat = "str" | "agi" | "int" | "vit";
 export type InventoryTab = "equip" | "use" | "etc" | "cash";
-export type HudWindowId = "stats" | "pack" | "party" | "skills" | "quests" | "npc";
+export type HudWindowId =
+    | "stats"
+    | "pack"
+    | "equipment"
+    | "party"
+    | "skills"
+    | "quests"
+    | "npc";
 export type HudToastKind = "info" | "error" | "reward";
 export type InventoryItemKind = "equipment" | "consumable" | "material" | "cash";
 export type HudChatChannel = "say" | "party" | "whisper" | "system";
