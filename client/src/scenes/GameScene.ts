@@ -11,6 +11,7 @@ import type {
     NpcDialogStateData,
     OnlinePlayerData,
     PartyStateData,
+    PvpStateData,
     QuestStateData,
     SkillStateData,
     TargetFrameData,
@@ -30,6 +31,9 @@ interface EntitySnapshot extends HudPlayerData {
     isGrounded: boolean;
     isFlying: boolean;
     isKnockedDown: boolean;
+    attackRange: number;
+    pvpEnabled: boolean;
+    pvpTagged: boolean;
     combatTargetId: string;
 }
 
@@ -59,6 +63,11 @@ interface SkillNotice {
 }
 
 interface NpcNotice {
+    kind: "info" | "error";
+    message: string;
+}
+
+interface PvpNotice {
     kind: "info" | "error";
     message: string;
 }
@@ -152,6 +161,7 @@ export class GameScene extends Phaser.Scene {
         const center = this.pointToWorld(10, 10, 0);
         this.cameras.main.centerOn(center.x, center.y);
         this.cameras.main.setZoom(1.5);
+        this.input.mouse?.disableContextMenu();
 
         this.statusText = this.add.text(10, 10, "Connecting...", {
             fontSize: "13px",
@@ -162,7 +172,7 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(2000);
 
-        this.add.text(10, 36, "Tab cycle target | Enter chat | WASD move | Space jump | Click NPC to trade | C/E/I/P/K/L panels | Esc close", {
+        this.add.text(10, 36, "Tab cycle target / nearby mob auto-attack | Right-click player menu | Enter chat | WASD move | Space jump | Click NPC to trade | C/E/I/P/K/L panels | Esc close", {
             fontSize: "11px",
             color: "#88ffaa99",
             fontFamily: "monospace",
@@ -174,11 +184,17 @@ export class GameScene extends Phaser.Scene {
             onAllocateStat: (stat: AllocatableStat) => {
                 this.safeSend("allocateStat", { stat });
             },
+            onTogglePvpMode: () => {
+                this.safeSend("togglePvpMode");
+            },
             onCreateParty: () => {
                 this.safeSend("partyCreate");
             },
             onInviteParty: (targetId: string) => {
                 this.safeSend("partyInvite", { targetId });
+            },
+            onWhisperPlayerTarget: (targetId: string) => {
+                this.startWhisperToPlayer(targetId);
             },
             onKickParty: (targetId: string) => {
                 this.safeSend("partyKick", { targetId });
@@ -215,6 +231,28 @@ export class GameScene extends Phaser.Scene {
             },
             onClaimQuest: (questId: string) => {
                 this.safeSend("questClaim", { questId });
+            },
+            onSendDuelChallenge: (targetId, stake) => {
+                this.safeSend("duelRequest", {
+                    targetId,
+                    gold: stake.gold,
+                    tab: stake.tab,
+                    index: stake.index,
+                });
+            },
+            onAcceptDuelChallenge: (challengerId, stake) => {
+                this.safeSend("duelAccept", {
+                    challengerId,
+                    gold: stake.gold,
+                    tab: stake.tab,
+                    index: stake.index,
+                });
+            },
+            onDeclineDuelChallenge: (challengerId) => {
+                this.safeSend("duelDecline", { challengerId });
+            },
+            onCancelDuelChallenge: () => {
+                this.safeSend("duelCancel");
             },
             onSubmitChat: (channel, text) => {
                 this.handleChatSubmit(channel, text);
@@ -367,6 +405,10 @@ export class GameScene extends Phaser.Scene {
             this.hudManager?.updateNpcDialogState(state);
         });
 
+        this.room.onMessage("pvpState", (state: PvpStateData) => {
+            this.hudManager?.updatePvpState(state);
+        });
+
         this.room.onMessage("partyNotice", (notice: PartyNotice) => {
             this.showSystemNotice(notice.message, notice.kind);
         });
@@ -386,6 +428,10 @@ export class GameScene extends Phaser.Scene {
         this.room.onMessage("chatNotice", (notice: ChatNotice) => {
             this.showSystemNotice(notice.message, notice.kind);
         });
+
+        this.room.onMessage("pvpNotice", (notice: PvpNotice) => {
+            this.showSystemNotice(notice.message, notice.kind);
+        });
     }
 
     private registerInputHandlers() {
@@ -398,6 +444,10 @@ export class GameScene extends Phaser.Scene {
 
             if (this.chatOpen) {
                 this.closeChat();
+                return;
+            }
+
+            if (this.hudManager?.closeTransientPanels()) {
                 return;
             }
 
@@ -439,7 +489,9 @@ export class GameScene extends Phaser.Scene {
                 pointer: Phaser.Input.Pointer,
                 currentlyOver: Phaser.GameObjects.GameObject[]
             ) => {
+                this.hudManager?.hidePlayerContextMenu();
                 if (currentlyOver.length > 0) return;
+                if (this.isRightClick(pointer)) return;
 
                 const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
                 const cart = this.screenToGroundCart(world.x, world.y);
@@ -560,13 +612,22 @@ export class GameScene extends Phaser.Scene {
 
         container.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
             pointer.event.stopPropagation();
+            if (this.isRightClick(pointer)) {
+                pointer.event.preventDefault();
+            }
+
+            this.hudManager?.hidePlayerContextMenu();
             const entity = this.entities.get(sessionId);
             if (!entity || entity.snapshot.isDead || sessionId === this.mySessionId) return;
             if (entity.snapshot.isNpc) {
                 this.safeSend("interactNpc", { npcId: sessionId });
                 return;
             }
+
             this.selectTarget(sessionId);
+            if (this.isRightClick(pointer) && !entity.snapshot.isMob) {
+                this.openPlayerContextMenu(entity, pointer);
+            }
         });
 
         container.on("pointerover", () => {
@@ -648,7 +709,7 @@ export class GameScene extends Phaser.Scene {
         head.setAlpha(aliveAlpha);
         headRing.setAlpha(snapshot.isDead ? 0.2 : 1);
         nameLabel.setAlpha(snapshot.isDead ? 0.45 : 1);
-        nameLabel.setText(snapshot.name);
+        nameLabel.setText(this.formatEntityDisplayName(snapshot));
         nameLabel.setColor(this.getEntityLabelColor(snapshot, entity.sessionId));
 
         if (snapshot.isKnockedDown) {
@@ -727,8 +788,15 @@ export class GameScene extends Phaser.Scene {
     private getEntityLabelColor(snapshot: EntitySnapshot, sessionId: string): string {
         if (sessionId === this.mySessionId) return "#7ae9a5";
         if (snapshot.isNpc) return "#f1c470";
+        if (!snapshot.isMob && snapshot.pvpTagged) return "#ff8a76";
         if (snapshot.isMob) return "#84c9ff";
         return "#efe6d0";
+    }
+
+    private formatEntityDisplayName(snapshot: EntitySnapshot): string {
+        return snapshot.pvpTagged && !snapshot.isMob
+            ? `${snapshot.name} (PVP)`
+            : snapshot.name;
     }
 
     private spawnDamageNumber(x: number, y: number, damage: number, effect: CombatEffect) {
@@ -774,6 +842,35 @@ export class GameScene extends Phaser.Scene {
         return players;
     }
 
+    private isRightClick(pointer: Phaser.Input.Pointer): boolean {
+        const nativeEvent = pointer.event as MouseEvent | undefined;
+        return nativeEvent?.button === 2;
+    }
+
+    private openPlayerContextMenu(entity: TrackedEntity, pointer: Phaser.Input.Pointer) {
+        const nativeEvent = pointer.event as MouseEvent | undefined;
+        this.hudManager?.showPlayerContextMenu(
+            {
+                sessionId: entity.sessionId,
+                name: entity.snapshot.name,
+                level: entity.snapshot.level,
+            },
+            nativeEvent?.clientX ?? pointer.x,
+            nativeEvent?.clientY ?? pointer.y
+        );
+    }
+
+    private startWhisperToPlayer(targetId: string) {
+        const target = this.entities.get(targetId);
+        if (!target || target.snapshot.isDead || target.snapshot.isMob || target.snapshot.isNpc) {
+            this.showNotice("That player is not available for whispers.", "error");
+            return;
+        }
+
+        this.selectTarget(targetId);
+        this.hudManager?.activateWhisperTarget(target.snapshot.name);
+    }
+
     private selectTarget(targetId: string) {
         const target = this.entities.get(targetId);
         if (!target || target.snapshot.isDead || target.snapshot.isNpc || targetId === this.mySessionId) {
@@ -796,6 +893,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     private clearLocalTarget(notifyServer = true) {
+        this.hudManager?.hidePlayerContextMenu();
         if (this.myTargetId) {
             const target = this.entities.get(this.myTargetId);
             if (target) this.updateTargetRing(target, false);
@@ -823,7 +921,9 @@ export class GameScene extends Phaser.Scene {
                 ? direction > 0 ? 0 : candidates.length - 1
                 : (currentIndex + direction + candidates.length) % candidates.length;
 
-        this.selectTarget(candidates[nextIndex]);
+        const nextTargetId = candidates[nextIndex];
+        this.selectTarget(nextTargetId);
+        this.syncTabbedAutoAttack(nextTargetId);
     }
 
     private getVisibleTargetIds(): string[] {
@@ -873,6 +973,30 @@ export class GameScene extends Phaser.Scene {
                 return a.sessionId.localeCompare(b.sessionId);
             })
             .map((entity) => entity.sessionId);
+    }
+
+    private syncTabbedAutoAttack(targetId: string) {
+        const local = this.entities.get(this.mySessionId);
+        const target = this.entities.get(targetId);
+
+        if (!local || !target || target.snapshot.isDead || target.snapshot.isNpc || !target.snapshot.isMob) {
+            this.safeSend("clearTarget");
+            return;
+        }
+
+        const distance = Phaser.Math.Distance.Between(
+            local.snapshot.x,
+            local.snapshot.y,
+            target.snapshot.x,
+            target.snapshot.y
+        );
+
+        if (distance <= local.snapshot.attackRange + 0.15) {
+            this.safeSend("engageTarget", { targetId });
+            return;
+        }
+
+        this.safeSend("clearTarget");
     }
 
     private showNotice(message: string, kind: HudToastKind = "info") {
@@ -1143,6 +1267,9 @@ export class GameScene extends Phaser.Scene {
             isGrounded: this.readBoolean(incoming.isGrounded, fallback.isGrounded),
             isFlying: this.readBoolean(incoming.isFlying, fallback.isFlying),
             isKnockedDown: this.readBoolean(incoming.isKnockedDown, fallback.isKnockedDown),
+            attackRange: this.readNumber(incoming.attackRange, fallback.attackRange),
+            pvpEnabled: this.readBoolean(incoming.pvpEnabled, fallback.pvpEnabled),
+            pvpTagged: this.readBoolean(incoming.pvpTagged, fallback.pvpTagged),
             combatTargetId: this.readString(incoming.combatTargetId, fallback.combatTargetId),
         };
     }
@@ -1176,6 +1303,9 @@ export class GameScene extends Phaser.Scene {
             isGrounded: true,
             isFlying: false,
             isKnockedDown: false,
+            attackRange: 2.5,
+            pvpEnabled: false,
+            pvpTagged: false,
             combatTargetId: "",
         };
     }
@@ -1211,6 +1341,8 @@ export class GameScene extends Phaser.Scene {
             maxHp: target.snapshot.maxHp,
             isMob: target.snapshot.isMob,
             mobKind: target.snapshot.mobKind,
+            pvpEnabled: target.snapshot.pvpEnabled,
+            pvpTagged: target.snapshot.pvpTagged,
         };
     }
 

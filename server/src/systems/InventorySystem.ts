@@ -26,6 +26,27 @@ export interface RemovedInventoryStack {
     tab: InventoryTab;
 }
 
+export interface InventoryItemSelection {
+    itemId: string;
+    name: string;
+    tab: InventoryTab;
+}
+
+export interface EquipmentDropResult {
+    itemId: string;
+    itemName: string;
+    slot: EquipmentSlot;
+}
+
+const EQUIPMENT_SLOT_ORDER: EquipmentSlot[] = [
+    "weapon",
+    "head",
+    "chest",
+    "hands",
+    "feet",
+    "accessory",
+];
+
 export class InventorySystem {
     constructor(private readonly statsSystem: StatsSystem) {}
 
@@ -132,6 +153,82 @@ export class InventorySystem {
         return {
             info: count > 1 ? `Received ${count}x ${item.name}.` : `Received ${item.name}.`,
         };
+    }
+
+    getInventoryItemAt(
+        player: Player,
+        tab: unknown,
+        index: unknown
+    ): { selection?: InventoryItemSelection; error?: string } {
+        if (!isInventoryTab(tab)) return { error: "Invalid inventory tab." };
+
+        const itemIndex = this.toArrayIndex(index);
+        if (itemIndex === null) return { error: "Invalid inventory slot." };
+
+        const stack = player.inventory[tab][itemIndex];
+        if (!stack) return { error: "No item found in that slot." };
+
+        const item = getItemDefinition(stack.itemId);
+        return {
+            selection: {
+                itemId: stack.itemId,
+                name: item?.name ?? stack.itemId,
+                tab,
+            },
+        };
+    }
+
+    removeItemUnitById(
+        player: Player,
+        tab: InventoryTab,
+        itemId: string
+    ): { selection?: InventoryItemSelection; error?: string } {
+        const stackIndex = player.inventory[tab].findIndex((entry) => entry.itemId === itemId);
+        if (stackIndex < 0) {
+            return { error: "That wager item is no longer in your inventory." };
+        }
+
+        const stack = player.inventory[tab][stackIndex];
+        if (!stack) {
+            return { error: "That wager item is no longer in your inventory." };
+        }
+
+        stack.count -= 1;
+        if (stack.count <= 0) {
+            player.inventory[tab].splice(stackIndex, 1);
+        }
+
+        const item = getItemDefinition(itemId);
+        return {
+            selection: {
+                itemId,
+                name: item?.name ?? itemId,
+                tab,
+            },
+        };
+    }
+
+    dropEquippedItemsByChance(player: Player, chancePerSlot: number): EquipmentDropResult[] {
+        const results: EquipmentDropResult[] = [];
+
+        EQUIPMENT_SLOT_ORDER.forEach((slot) => {
+            const itemId = player.equipment[slot];
+            if (!itemId || Math.random() > chancePerSlot) return;
+
+            delete player.equipment[slot];
+            const item = getItemDefinition(itemId);
+            results.push({
+                itemId,
+                itemName: item?.name ?? itemId,
+                slot,
+            });
+        });
+
+        if (results.length > 0) {
+            this.statsSystem.recalculatePlayerDerivedStats(player);
+        }
+
+        return results;
     }
 
     removeInventoryStack(

@@ -11,6 +11,8 @@ export class TargetFrame {
     private tagLabel: HTMLSpanElement;
     private nameLabel: HTMLDivElement;
     private levelLabel: HTMLSpanElement;
+    private pvpChip: HTMLSpanElement;
+    private pkChip: HTMLSpanElement;
     private hpMeter = createMeter("Target HP", "hp");
 
     constructor(host: HTMLElement) {
@@ -22,8 +24,10 @@ export class TargetFrame {
         this.tagLabel = createElement("span", ["hud-chip", "hud-chip--danger"], "TARGET");
         this.nameLabel = createElement("div", "hud-target__name", "Unknown");
         this.levelLabel = createElement("span", ["hud-chip", "hud-chip--accent"], "Lv. 1");
+        this.pvpChip = createElement("span", ["hud-chip", "hud-chip--good", "is-hidden"], "PvP");
+        this.pkChip = createElement("span", ["hud-chip", "hud-chip--danger", "is-hidden"], "(PVP)");
 
-        appendChildren(meta, this.tagLabel, this.levelLabel);
+        appendChildren(meta, this.tagLabel, this.pvpChip, this.pkChip, this.levelLabel);
         appendChildren(identity, this.nameLabel, meta);
         appendChildren(header, identity);
         appendChildren(this.root, header, this.hpMeter.root);
@@ -38,6 +42,8 @@ export class TargetFrame {
 
         this.nameLabel.textContent = target.name;
         this.tagLabel.textContent = toTargetLabel(target);
+        this.pvpChip.classList.toggle("is-hidden", !(target.pvpEnabled && !target.isMob));
+        this.pkChip.classList.toggle("is-hidden", !target.pvpTagged);
         this.levelLabel.textContent = `Lv. ${target.level}`;
         updateMeter(this.hpMeter, target.hp, target.maxHp, `${target.hp} / ${target.maxHp}`);
         this.root.classList.remove("hud-target--hidden");

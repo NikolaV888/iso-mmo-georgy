@@ -39,6 +39,7 @@ export interface DirectAttackOptions {
     knockupImpulse?: number;
     slamSpeed?: number;
     resetCombo?: boolean;
+    minimumTargetHp?: number;
 }
 
 export class CombatSystem {
@@ -49,8 +50,19 @@ export class CombatSystem {
             if (attacker.isDead || attacker.isKnockedDown || !attacker.combatTargetId) return;
 
             const target = players.get(attacker.combatTargetId);
-            if (!target || target.isDead) {
+            if (!target || target.isDead || target.isNpc) {
                 this.stopAttacking(attacker);
+                return;
+            }
+
+            if (!attacker.isMob && !target.isMob) {
+                this.stopAttacking(attacker);
+                return;
+            }
+
+            if (!attacker.isMob) {
+                attacker.targetX = attacker.x;
+                attacker.targetY = attacker.y;
                 return;
             }
 
@@ -69,7 +81,12 @@ export class CombatSystem {
             if (attacker.isDead || attacker.isKnockedDown || !attacker.combatTargetId) return;
 
             const target = players.get(attacker.combatTargetId);
-            if (!target || target.isDead) {
+            if (!target || target.isDead || target.isNpc) {
+                this.stopAttacking(attacker);
+                return;
+            }
+
+            if (!attacker.isMob && !target.isMob) {
                 this.stopAttacking(attacker);
                 return;
             }
@@ -253,6 +270,7 @@ export class CombatSystem {
             knockupImpulse,
             slamSpeed,
             resetCombo,
+            minimumTargetHp,
         }: DirectAttackOptions,
         result: CombatResult
     ): void {
@@ -270,7 +288,8 @@ export class CombatSystem {
             physicsSystem.applySlam(target, slamSpeed);
         }
 
-        target.hp = Math.max(0, target.hp - damage);
+        const safeFloor = Math.max(0, Math.floor(minimumTargetHp ?? 0));
+        target.hp = Math.max(safeFloor, target.hp - damage);
 
         result.events.push({
             attacker: attackerSid,
@@ -280,7 +299,8 @@ export class CombatSystem {
             effect,
         });
 
-        if (target.hp > 0) return;
+        if (target.hp > safeFloor) return;
+        if (safeFloor > 0) return;
 
         target.isDead = true;
         target.hp = 0;

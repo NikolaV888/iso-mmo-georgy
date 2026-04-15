@@ -198,6 +198,22 @@ export class StatsSystem {
         };
     }
 
+    spendGold(player: Player, amount: number): GoldGainResult {
+        if (player.isMob || amount <= 0) {
+            return {
+                amount: 0,
+                totalGold: player.gold,
+            };
+        }
+
+        const spent = Math.min(player.gold, Math.max(0, Math.floor(amount)));
+        player.gold -= spent;
+        return {
+            amount: spent,
+            totalGold: player.gold,
+        };
+    }
+
     resetPosition(player: Player, x: number, y: number): void {
         const clampedX = TerrainSystem.clampCoordinate(x);
         const clampedY = TerrainSystem.clampCoordinate(y);

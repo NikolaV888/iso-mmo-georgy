@@ -55,7 +55,8 @@
 .hud-hotbar,
 .hud-quest-tracker,
 .hud-panel,
-.hud-chatbox {
+ .hud-chatbox,
+ .hud-player-menu {
   pointer-events: auto;
 }
 
@@ -137,6 +138,12 @@
   gap: 8px;
 }
 
+.hud-topbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .hud-chip {
   display: inline-flex;
   align-items: center;
@@ -176,6 +183,15 @@
 .hud-chip--points.is-ready {
   color: var(--ui-good);
   border-color: rgba(122, 233, 165, 0.35);
+}
+
+.hud-topbar__toggle {
+  min-width: 84px;
+}
+
+.hud-topbar__toggle.is-tagged {
+  border-color: rgba(255, 138, 118, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 138, 118, 0.16);
 }
 
 .hud-meter {
@@ -242,6 +258,35 @@
 
 .is-hidden {
   display: none !important;
+}
+
+.hud-player-menu {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 360;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(220px, calc(100vw - 24px));
+  padding: 12px;
+}
+
+.hud-player-menu__title {
+  color: var(--ui-gold);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.hud-player-menu__meta {
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.hud-player-menu__action {
+  width: 100%;
+  justify-content: center;
 }
 
 .hud-toast-feed {
@@ -486,6 +531,13 @@
   max-height: min(68vh, 620px);
 }
 
+.hud-panel--duel {
+  left: 50%;
+  top: 140px;
+  transform: translateX(-50%);
+  width: min(380px, calc(100vw - 24px));
+}
+
 .hud-panel__header {
   display: flex;
   align-items: center;
@@ -519,6 +571,24 @@
 .hud-item-tooltip__hint {
   color: var(--ui-muted);
   line-height: 1.4;
+}
+
+.hud-detail-card--duel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-duel-panel__wager {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.hud-duel-panel__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .hud-item-tooltip__title {
@@ -1027,6 +1097,14 @@
   }
 
   .hud-panel--npc {
+    transform: none;
+  }
+
+  .hud-panel--duel {
+    left: 12px;
+    right: 12px;
+    top: 96px;
+    width: auto;
     transform: none;
   }
 

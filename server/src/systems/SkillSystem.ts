@@ -36,6 +36,12 @@ export interface SkillUseResult {
 interface ResolvedTarget {
     target: Player;
     targetSid: string;
+    minimumTargetHp: number;
+}
+
+export interface SkillAttackRuleResolution {
+    error?: string;
+    minimumTargetHp?: number;
 }
 
 export class SkillSystem {
@@ -59,7 +65,12 @@ export class SkillSystem {
         players: MapSchema<Player>,
         now: number,
         physicsSystem: PhysicsSystem,
-        combatSystem: CombatSystem
+        combatSystem: CombatSystem,
+        resolveAttackRule?: (
+            attackerSid: string,
+            targetSid: string,
+            target: Player
+        ) => SkillAttackRuleResolution
     ): SkillUseResult {
         const definition = getSkillDefinition(skillId);
         const useError = this.getBlockedReason(player, definition, now);
@@ -77,7 +88,8 @@ export class SkillSystem {
                     now,
                     physicsSystem,
                     combatSystem,
-                    definition
+                    definition,
+                    resolveAttackRule
                 );
             case "rising-uppercut":
                 return this.useRisingUppercut(
@@ -88,7 +100,8 @@ export class SkillSystem {
                     now,
                     physicsSystem,
                     combatSystem,
-                    definition
+                    definition,
+                    resolveAttackRule
                 );
             case "guardian-pulse":
                 return this.useGuardianPulse(player, now, definition);
@@ -143,9 +156,14 @@ export class SkillSystem {
         now: number,
         physicsSystem: PhysicsSystem,
         combatSystem: CombatSystem,
-        definition: SkillDefinition
+        definition: SkillDefinition,
+        resolveAttackRule?: (
+            attackerSid: string,
+            targetSid: string,
+            target: Player
+        ) => SkillAttackRuleResolution
     ): SkillUseResult {
-        const resolvedTarget = this.resolveTarget(targetSid, players);
+        const resolvedTarget = this.resolveTarget(playerSid, targetSid, players, resolveAttackRule);
         if ("error" in resolvedTarget) return resolvedTarget;
 
         const range = player.attackRange + GameConfig.SKILL_POWER_STRIKE_RANGE_BONUS;
@@ -173,6 +191,7 @@ export class SkillSystem {
                 effect: airborneTarget ? "air-hit" : "hit",
                 physicsSystem,
                 resetCombo: true,
+                minimumTargetHp: resolvedTarget.minimumTargetHp,
             }),
         };
     }
@@ -185,9 +204,14 @@ export class SkillSystem {
         now: number,
         physicsSystem: PhysicsSystem,
         combatSystem: CombatSystem,
-        definition: SkillDefinition
+        definition: SkillDefinition,
+        resolveAttackRule?: (
+            attackerSid: string,
+            targetSid: string,
+            target: Player
+        ) => SkillAttackRuleResolution
     ): SkillUseResult {
-        const resolvedTarget = this.resolveTarget(targetSid, players);
+        const resolvedTarget = this.resolveTarget(playerSid, targetSid, players, resolveAttackRule);
         if ("error" in resolvedTarget) return resolvedTarget;
 
         if (!resolvedTarget.target.isGrounded || resolvedTarget.target.isKnockedDown) {
@@ -218,6 +242,7 @@ export class SkillSystem {
                 physicsSystem,
                 knockupImpulse: GameConfig.SKILL_RISING_UPPERCUT_IMPULSE,
                 resetCombo: true,
+                minimumTargetHp: resolvedTarget.minimumTargetHp,
             }),
         };
     }
@@ -260,8 +285,14 @@ export class SkillSystem {
     }
 
     private resolveTarget(
+        attackerSid: string,
         targetSid: string,
-        players: MapSchema<Player>
+        players: MapSchema<Player>,
+        resolveAttackRule?: (
+            attackerSid: string,
+            targetSid: string,
+            target: Player
+        ) => SkillAttackRuleResolution
     ): ResolvedTarget | { error: string } {
         const resolvedTargetSid = targetSid.trim();
         if (!resolvedTargetSid) {
@@ -273,7 +304,16 @@ export class SkillSystem {
             return { error: "Your target is no longer available." };
         }
 
-        return { target, targetSid: resolvedTargetSid };
+        const attackRule = resolveAttackRule?.(attackerSid, resolvedTargetSid, target) ?? {};
+        if (attackRule.error) {
+            return { error: attackRule.error };
+        }
+
+        return {
+            target,
+            targetSid: resolvedTargetSid,
+            minimumTargetHp: Math.max(0, Math.floor(attackRule.minimumTargetHp ?? 0)),
+        };
     }
 
     private isTargetInRange(attacker: Player, target: Player, range: number): boolean {

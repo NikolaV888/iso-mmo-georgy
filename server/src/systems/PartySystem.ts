@@ -57,8 +57,19 @@ export class PartySystem {
         leaderId: string,
         targetId: string,
         players: MapSchema<Player>
-    ): { partyId?: string; error?: string } {
-        const party = this.getPartyForMember(leaderId);
+    ): { partyId?: string; createdParty?: boolean; error?: string } {
+        let party = this.getPartyForMember(leaderId);
+        let createdParty = false;
+        if (!party) {
+            const created = this.createParty(leaderId);
+            if (created.error || !created.partyId) {
+                return { error: created.error ?? "Could not create a party." };
+            }
+
+            party = this.getPartyForMember(leaderId);
+            createdParty = true;
+        }
+
         if (!party) {
             return { error: "Create a party first." };
         }
@@ -91,7 +102,7 @@ export class PartySystem {
 
         invites.set(party.id, leaderId);
         this.invitesByTarget.set(targetId, invites);
-        return { partyId: party.id };
+        return { partyId: party.id, createdParty };
     }
 
     acceptInvite(targetId: string, partyId: string): { partyId?: string; error?: string } {
@@ -213,6 +224,12 @@ export class PartySystem {
         }
 
         return recipients.length > 0 ? recipients : [sourceId];
+    }
+
+    arePartyMembers(aId: string, bId: string): boolean {
+        if (!aId || !bId || aId === bId) return false;
+        const partyId = this.partyByMember.get(aId);
+        return typeof partyId === "string" && partyId === this.partyByMember.get(bId);
     }
 
     getPartyStateFor(sessionId: string, players: MapSchema<Player>): PartyStateView {

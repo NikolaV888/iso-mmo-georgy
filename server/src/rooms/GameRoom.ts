@@ -16,6 +16,7 @@ import { MovementSystem } from "../systems/MovementSystem";
 import { NpcSystem } from "../systems/NpcSystem";
 import { PartySystem } from "../systems/PartySystem";
 import { PhysicsSystem } from "../systems/PhysicsSystem";
+import { PvpSystem } from "../systems/PvpSystem";
 import { QuestSystem } from "../systems/QuestSystem";
 import { ShopSystem } from "../systems/ShopSystem";
 import { SkillSystem } from "../systems/SkillSystem";
@@ -56,6 +57,7 @@ export class GameRoom extends Room<GameState> {
     private questSystem = new QuestSystem(this.statsSystem, this.inventorySystem);
     private npcSystem = new NpcSystem();
     private skillSystem = new SkillSystem();
+    private pvpSystem = new PvpSystem(this.inventorySystem, this.statsSystem);
     private broadcastAccumulator = 0;
     private ownerStateAccumulator = 0;
 
@@ -129,6 +131,28 @@ export class GameRoom extends Room<GameState> {
         this.onMessage("clearTarget", (client: Client) => {
             const player = this.state.players.get(client.sessionId);
             if (player) player.combatTargetId = "";
+        });
+
+        this.onMessage("engageTarget", (client: Client, data: { targetId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isDead || player.isKnockedDown || player.isMob) return;
+            if (typeof data?.targetId !== "string") return;
+            if (data.targetId === client.sessionId) return;
+
+            const target = this.state.players.get(data.targetId);
+            if (!target || target.isDead || target.isNpc || !target.isMob) {
+                player.combatTargetId = "";
+                return;
+            }
+
+            player.combatTargetId = data.targetId;
+            player.targetX = player.x;
+            player.targetY = player.y;
+            this.npcSystem.closeInteraction(player);
+        });
+
+        this.onMessage("togglePvpMode", (client: Client) => {
+            this.applyPvpResult(this.pvpSystem.togglePvpMode(client.sessionId, this.state.players));
         });
 
         this.onMessage("allocateStat", (client: Client, data: { stat: string }) => {
@@ -320,7 +344,19 @@ export class GameRoom extends Room<GameState> {
                 this.state.players,
                 now,
                 this.physicsSystem,
-                this.combatSystem
+                this.combatSystem,
+                (attackerSid, targetSid) => {
+                    const permission = this.pvpSystem.canAttackTarget(
+                        attackerSid,
+                        targetSid,
+                        this.state.players,
+                        this.partySystem
+                    );
+
+                    return permission.allowed
+                        ? { minimumTargetHp: permission.minimumTargetHp ?? 0 }
+                        : { error: permission.error ?? "You cannot attack that target." };
+                }
             );
 
             if (result.error) {
@@ -337,6 +373,63 @@ export class GameRoom extends Room<GameState> {
             if (result.info) {
                 this.sendSkillNotice(client.sessionId, "info", result.info);
             }
+        });
+
+        this.onMessage(
+            "duelRequest",
+            (
+                client: Client,
+                data: { targetId: string; gold?: number; tab?: InventoryTab; index?: number }
+            ) => {
+                if (typeof data?.targetId !== "string") return;
+                this.applyPvpResult(
+                    this.pvpSystem.requestDuel(
+                        client.sessionId,
+                        data.targetId,
+                        {
+                            gold: data.gold,
+                            tab: data.tab,
+                            index: data.index,
+                        },
+                        this.state.players,
+                        this.partySystem
+                    )
+                );
+            }
+        );
+
+        this.onMessage(
+            "duelAccept",
+            (
+                client: Client,
+                data: { challengerId: string; gold?: number; tab?: InventoryTab; index?: number }
+            ) => {
+                if (typeof data?.challengerId !== "string") return;
+                this.applyPvpResult(
+                    this.pvpSystem.acceptDuel(
+                        client.sessionId,
+                        data.challengerId,
+                        {
+                            gold: data.gold,
+                            tab: data.tab,
+                            index: data.index,
+                        },
+                        this.state.players,
+                        this.partySystem
+                    )
+                );
+            }
+        );
+
+        this.onMessage("duelDecline", (client: Client, data: { challengerId: string }) => {
+            if (typeof data?.challengerId !== "string") return;
+            this.applyPvpResult(
+                this.pvpSystem.declineDuel(client.sessionId, data.challengerId, this.state.players)
+            );
+        });
+
+        this.onMessage("duelCancel", (client: Client) => {
+            this.applyPvpResult(this.pvpSystem.cancelOutgoing(client.sessionId, this.state.players));
         });
 
         this.onMessage("partyCreate", (client: Client) => {
@@ -365,7 +458,8 @@ export class GameRoom extends Room<GameState> {
 
             const targetName = this.state.players.get(data.targetId)?.name ?? "Player";
             const leaderName = this.state.players.get(client.sessionId)?.name ?? "Party Leader";
-            this.sendPartyNotice(client.sessionId, "info", `Invite sent to ${targetName}.`);
+            const createdPrefix = result.createdParty ? "Party created. " : "";
+            this.sendPartyNotice(client.sessionId, "info", `${createdPrefix}Invite sent to ${targetName}.`);
             this.sendPartyNotice(
                 data.targetId,
                 "info",
@@ -410,6 +504,8 @@ export class GameRoom extends Room<GameState> {
                 return;
             }
 
+            this.applyPvpResult(this.pvpSystem.reconcilePartyState(this.state.players, this.partySystem));
+
             const targetName = this.state.players.get(data.targetId)?.name ?? "Player";
             this.sendPartyNotice(client.sessionId, "info", `${targetName} was removed from the party.`);
             this.sendPartyNotice(data.targetId, "info", "You were removed from the party.");
@@ -424,6 +520,8 @@ export class GameRoom extends Room<GameState> {
                 this.sendPartyNotice(client.sessionId, "error", result.error);
                 return;
             }
+
+            this.applyPvpResult(this.pvpSystem.reconcilePartyState(this.state.players, this.partySystem));
 
             this.sendPartyNotice(client.sessionId, "info", "You left the party.");
             memberIds
@@ -474,6 +572,7 @@ export class GameRoom extends Room<GameState> {
         this.inventorySystem.initializePlayerInventory(player);
         this.questSystem.initializePlayerQuests(player);
         this.skillSystem.initializePlayerSkills(player);
+        this.pvpSystem.initializePlayerState(player);
         this.state.players.set(client.sessionId, player);
         client.send("init", { sessionId: client.sessionId });
         this.sendPartyState(client);
@@ -481,11 +580,13 @@ export class GameRoom extends Room<GameState> {
         this.sendSkillState(client, Date.now());
         this.sendQuestState(client);
         this.sendNpcDialogState(client);
+        this.sendPvpState(client);
     }
 
     onLeave(client: Client, _consented: boolean) {
         console.log(`[Room] ${client.sessionId} left`);
         this.combatSystem.clearTargetForAll(client.sessionId, this.state.players);
+        this.applyPvpResult(this.pvpSystem.handleDisconnect(client.sessionId, this.state.players));
         const leavingName = this.state.players.get(client.sessionId)?.name ?? "A player";
         const memberIds = this.partySystem.getPartyMemberIds(client.sessionId);
         this.partySystem.handleDisconnect(client.sessionId);
@@ -577,6 +678,9 @@ export class GameRoom extends Room<GameState> {
             isGrounded: boolean;
             isFlying: boolean;
             isKnockedDown: boolean;
+            attackRange: number;
+            pvpEnabled: boolean;
+            pvpTagged: boolean;
             combatTargetId: string;
         }> = {};
 
@@ -609,6 +713,9 @@ export class GameRoom extends Room<GameState> {
                 isGrounded: player.isGrounded,
                 isFlying: player.isFlying,
                 isKnockedDown: player.isKnockedDown,
+                attackRange: player.attackRange,
+                pvpEnabled: player.pvpEnabled,
+                pvpTagged: player.pvpTagged,
                 combatTargetId: player.combatTargetId,
             };
         });
@@ -625,6 +732,7 @@ export class GameRoom extends Room<GameState> {
             this.sendSkillState(client, now);
             this.sendQuestState(client);
             this.sendNpcDialogState(client);
+            this.sendPvpState(client);
         });
     }
 
@@ -666,6 +774,12 @@ export class GameRoom extends Room<GameState> {
         );
     }
 
+    private sendPvpState(client: Client) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player || player.isMob || player.isNpc) return;
+        client.send("pvpState", this.pvpSystem.getStateFor(client.sessionId, this.state.players));
+    }
+
     private sendPartyNotice(sessionId: string, kind: "info" | "error", message: string) {
         const client = this.clients.find((candidate) => candidate.sessionId === sessionId);
         if (!client) return;
@@ -694,6 +808,32 @@ export class GameRoom extends Room<GameState> {
         const client = this.findClient(sessionId);
         if (!client) return;
         client.send("chatNotice", { kind, message });
+    }
+
+    private sendPvpNotice(sessionId: string, kind: "info" | "error", message: string) {
+        const client = this.findClient(sessionId);
+        if (!client) return;
+        client.send("pvpNotice", { kind, message });
+    }
+
+    private applyPvpResult(result: {
+        notices: Array<{ sessionId: string; kind: "info" | "error"; message: string }>;
+        stateRecipients: string[];
+        inventoryRecipients: string[];
+    }) {
+        result.notices.forEach((notice) => {
+            this.sendPvpNotice(notice.sessionId, notice.kind, notice.message);
+        });
+
+        result.stateRecipients.forEach((sessionId) => {
+            const client = this.findClient(sessionId);
+            if (client) this.sendPvpState(client);
+        });
+
+        result.inventoryRecipients.forEach((sessionId) => {
+            const client = this.findClient(sessionId);
+            if (client) this.sendInventoryState(client);
+        });
     }
 
     private notifyPartyMembers(memberId: string, message: string) {
@@ -771,12 +911,25 @@ export class GameRoom extends Room<GameState> {
 
     private processCombatResult(combatResult: CombatResult) {
         combatResult.events.forEach((event) => this.broadcast("combatEvent", event));
+        this.applyPvpResult(this.pvpSystem.resolveActiveDuelsFromCombat(combatResult.events, this.state.players));
 
         combatResult.died.forEach(
             ({ sessionId, killerId, targetName, wasMob, mobKind, expReward, goldReward }) => {
                 if (wasMob) {
                     this.distributeMobRewards(killerId, targetName, mobKind, expReward, goldReward);
+                } else {
+                    this.applyPvpResult(
+                        this.pvpSystem.handleOpenWorldKill(killerId, sessionId, this.state.players)
+                    );
                 }
+
+                this.applyPvpResult(
+                    this.pvpSystem.clearChallengesForPlayer(
+                        sessionId,
+                        this.state.players,
+                        "That duel is no longer available."
+                    )
+                );
                 this.combatSystem.clearTargetForAll(sessionId, this.state.players);
                 this.broadcast("playerDied", { sessionId });
             }

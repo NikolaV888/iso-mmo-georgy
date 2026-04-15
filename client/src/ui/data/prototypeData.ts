@@ -5,6 +5,7 @@ import type {
     InventoryItem,
     InventoryStateData,
     InventoryTab,
+    PvpStateData,
     PartyStateData,
     QuestEntryData,
     QuestStateData,
@@ -29,6 +30,8 @@ export const DEFAULT_HUD_PLAYER: HudPlayerData = {
     attackDamage: 0,
     attackSpeed: 0,
     moveSpeed: 0,
+    pvpEnabled: false,
+    pvpTagged: false,
 };
 
 export const DEFAULT_PARTY_STATE: PartyStateData = {
@@ -222,6 +225,16 @@ export function createClosedNpcDialogState(): NpcDialogStateData {
         quest: null,
         shopItems: [],
         sellItems: [],
+    };
+}
+
+export function createEmptyPvpState(): PvpStateData {
+    return {
+        pvpEnabled: false,
+        pvpTagged: false,
+        incomingChallenge: null,
+        outgoingChallenge: null,
+        activeDuel: null,
     };
 }
 

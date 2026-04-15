@@ -3,6 +3,7 @@ import {
     DEFAULT_PARTY_STATE,
     buildHotbarEntries,
     createEmptyInventoryState,
+    createEmptyPvpState,
     createEmptyQuestState,
     createEmptySkillState,
 } from "./data/prototypeData";
@@ -10,12 +11,14 @@ import { createElement } from "./dom";
 import { HudLayoutManager } from "./HudLayoutManager";
 import { ActionBar } from "./components/ActionBar";
 import { ChatBox } from "./components/ChatBox";
+import { DuelPanel } from "./components/DuelPanel";
 import { EquipmentPanel } from "./components/EquipmentPanel";
 import { Hotbar } from "./components/Hotbar";
 import { InventoryPanel } from "./components/InventoryPanel";
 import { ItemTooltip } from "./components/ItemTooltip";
 import { NpcDialogPanel } from "./components/NpcDialogPanel";
 import { PartyPanel } from "./components/PartyPanel";
+import { PlayerContextMenu } from "./components/PlayerContextMenu";
 import { QuestPanel } from "./components/QuestPanel";
 import { QuestTracker } from "./components/QuestTracker";
 import { SkillPanel } from "./components/SkillPanel";
@@ -34,6 +37,8 @@ import type {
     NpcDialogStateData,
     OnlinePlayerData,
     PartyStateData,
+    PlayerContextTargetData,
+    PvpStateData,
     QuestStateData,
     SkillStateData,
     TargetFrameData,
@@ -72,6 +77,7 @@ export class HudManager {
     private inventoryState: InventoryStateData = createEmptyInventoryState();
     private skillState: SkillStateData = createEmptySkillState();
     private questState: QuestStateData = createEmptyQuestState();
+    private pvpState: PvpStateData = createEmptyPvpState();
     private onlinePlayers: OnlinePlayerData[] = [];
 
     private topBar: TopBar;
@@ -79,6 +85,7 @@ export class HudManager {
     private toastFeed: ToastFeed;
     private itemTooltip: ItemTooltip;
     private chatBox: ChatBox;
+    private duelPanel: DuelPanel;
     private actionBar: ActionBar;
     private hotbar: Hotbar;
     private statsPanel: StatsPanel;
@@ -89,6 +96,7 @@ export class HudManager {
     private questPanel: QuestPanel;
     private questTracker: QuestTracker;
     private npcDialogPanel: NpcDialogPanel;
+    private playerContextMenu: PlayerContextMenu;
     private layoutManager: HudLayoutManager;
     private readonly stateSignatures = new Map<string, string>();
     private windows: Record<HudWindowId, WindowSurface>;
@@ -101,11 +109,12 @@ export class HudManager {
         this.root.id = "hud-root";
         document.body.append(this.root);
 
-        this.topBar = new TopBar(this.root);
+        this.topBar = new TopBar(this.root, callbacks);
         this.targetFrame = new TargetFrame(this.root);
         this.toastFeed = new ToastFeed(this.root);
         this.itemTooltip = new ItemTooltip(this.root);
         this.chatBox = new ChatBox(this.root, callbacks);
+        this.duelPanel = new DuelPanel(this.root, callbacks);
         this.statsPanel = new StatsPanel(this.root, callbacks);
         this.inventoryPanel = new InventoryPanel(this.root, callbacks, this.itemTooltip);
         this.equipmentPanel = new EquipmentPanel(this.root, callbacks, this.itemTooltip);
@@ -114,6 +123,21 @@ export class HudManager {
         this.questPanel = new QuestPanel(this.root);
         this.questTracker = new QuestTracker(this.root);
         this.npcDialogPanel = new NpcDialogPanel(this.root, callbacks);
+        this.playerContextMenu = new PlayerContextMenu(this.root, (action, target) => {
+            switch (action) {
+                case "invite":
+                    this.callbacks.onInviteParty?.(target.sessionId);
+                    return;
+                case "whisper":
+                    this.callbacks.onWhisperPlayerTarget?.(target.sessionId);
+                    return;
+                case "duel":
+                    this.openDuelComposer(target);
+                    return;
+                default:
+                    return;
+            }
+        });
 
         this.windows = {
             stats: this.statsPanel,
@@ -137,9 +161,11 @@ export class HudManager {
         this.inventoryPanel.setGold(this.playerState.gold);
         this.inventoryPanel.updateInventoryState(this.inventoryState);
         this.equipmentPanel.updateInventoryState(this.inventoryState);
+        this.duelPanel.updateInventoryState(this.inventoryState);
         this.skillPanel.updateEntries(this.skillState.skills);
         this.questPanel.updateEntries(this.questState.entries);
         this.questTracker.updateEntries(this.questState.entries);
+        this.duelPanel.updatePvpState(this.pvpState);
         this.hotbar.updateEntries(buildHotbarEntries(this.skillState, this.inventoryState));
         this.syncActionBar();
         this.registerDraggableSurfaces();
@@ -147,6 +173,7 @@ export class HudManager {
 
     public destroy() {
         this.chatBox.destroy();
+        this.playerContextMenu.destroy();
         this.layoutManager.destroy();
         this.toastFeed.destroy();
         this.root.remove();
@@ -172,6 +199,10 @@ export class HudManager {
         this.chatBox.setWhisperTarget(name);
     }
 
+    public activateWhisperTarget(name: string) {
+        this.chatBox.activateWhisperTarget(name);
+    }
+
     public addChatEntry(entry: ChatLogEntryData) {
         this.chatBox.addEntry(entry);
     }
@@ -193,6 +224,8 @@ export class HudManager {
             attackDamage: this.readNumber(player.attackDamage, this.playerState.attackDamage),
             attackSpeed: this.readNumber(player.attackSpeed, this.playerState.attackSpeed),
             moveSpeed: this.readNumber(player.moveSpeed, this.playerState.moveSpeed),
+            pvpEnabled: this.readBoolean(player.pvpEnabled, this.playerState.pvpEnabled),
+            pvpTagged: this.readBoolean(player.pvpTagged, this.playerState.pvpTagged),
         };
 
         this.topBar.update(this.playerState);
@@ -233,6 +266,7 @@ export class HudManager {
         this.inventoryState = state;
         this.inventoryPanel.updateInventoryState(this.inventoryState);
         this.equipmentPanel.updateInventoryState(this.inventoryState);
+        this.duelPanel.updateInventoryState(this.inventoryState);
         this.syncHotbar();
     }
 
@@ -256,6 +290,21 @@ export class HudManager {
         this.syncActionBar();
         if (state.isOpen) {
             this.layoutManager.promoteSurface("npc-dialog-panel");
+        }
+    }
+
+    public updatePvpState(state: PvpStateData) {
+        if (this.shouldSkipStateUpdate("pvpState", state)) return;
+        this.pvpState = state;
+        this.playerState = {
+            ...this.playerState,
+            pvpEnabled: state.pvpEnabled,
+            pvpTagged: state.pvpTagged,
+        };
+        this.topBar.update(this.playerState);
+        this.duelPanel.updatePvpState(this.pvpState);
+        if (state.incomingChallenge || state.outgoingChallenge || state.activeDuel) {
+            this.layoutManager.promoteSurface("duel-panel");
         }
     }
 
@@ -283,6 +332,29 @@ export class HudManager {
 
         if (closedAny) this.syncActionBar();
         return closedAny;
+    }
+
+    public closeTransientPanels(): boolean {
+        const duelWasOpen = this.duelPanel.isOpen();
+        const playerMenuWasOpen = this.playerContextMenu.isOpen();
+        this.hidePlayerContextMenu();
+        if (duelWasOpen) {
+            this.duelPanel.setOpen(false);
+        }
+        return duelWasOpen || playerMenuWasOpen;
+    }
+
+    public showPlayerContextMenu(target: PlayerContextTargetData, x: number, y: number) {
+        this.playerContextMenu.show(target, x, y);
+    }
+
+    public hidePlayerContextMenu() {
+        this.playerContextMenu.hide();
+    }
+
+    public openDuelComposer(target: PlayerContextTargetData) {
+        this.duelPanel.openCompose(target);
+        this.layoutManager.promoteSurface("duel-panel");
     }
 
     public handleWindowHotkey(key: string): boolean {
@@ -380,6 +452,12 @@ export class HudManager {
             layer: 300,
         });
         this.layoutManager.registerSurface({
+            id: "duel-panel",
+            element: this.duelPanel.getRootElement(),
+            handle: this.duelPanel.getDragHandleElement(),
+            layer: 320,
+        });
+        this.layoutManager.registerSurface({
             id: "npc-dialog-panel",
             element: this.npcDialogPanel.getRootElement(),
             handle: this.npcDialogPanel.getDragHandleElement(),
@@ -412,6 +490,10 @@ export class HudManager {
 
     private readString(value: unknown, fallback: string): string {
         return typeof value === "string" && value.trim() ? value : fallback;
+    }
+
+    private readBoolean(value: unknown, fallback: boolean): boolean {
+        return typeof value === "boolean" ? value : fallback;
     }
 
     private readNullableString(value: unknown, fallback: string | null): string | null {

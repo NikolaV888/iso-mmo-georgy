@@ -77,6 +77,8 @@ export class Player extends Schema {
     inputX: number = 0;
     inputY: number = 0;
     goldReward: number = 0;
+    pvpEnabled: boolean = false;
+    pvpTagged: boolean = false;
 
     inventory: InventoryCollection = createEmptyInventoryCollection();
     equipment: EquipmentLoadout = createEmptyEquipmentLoadout();

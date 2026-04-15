@@ -42,6 +42,8 @@ export interface HudPlayerData {
     attackDamage: number;
     attackSpeed: number;
     moveSpeed: number;
+    pvpEnabled: boolean;
+    pvpTagged: boolean;
 }
 
 export interface OnlinePlayerData {
@@ -194,12 +196,61 @@ export interface TargetFrameData {
     maxHp: number;
     isMob: boolean;
     mobKind: string;
+    pvpEnabled: boolean;
+    pvpTagged: boolean;
+}
+
+export interface DuelStakeData {
+    gold: number;
+    itemId: string | null;
+    itemName: string | null;
+}
+
+export interface IncomingDuelData {
+    challengerId: string;
+    challengerName: string;
+    offeredStake: DuelStakeData;
+}
+
+export interface OutgoingDuelData {
+    targetId: string;
+    targetName: string;
+    offeredStake: DuelStakeData;
+}
+
+export interface ActiveDuelData {
+    opponentId: string;
+    opponentName: string;
+    yourStake: DuelStakeData;
+    opponentStake: DuelStakeData;
+}
+
+export interface PvpStateData {
+    pvpEnabled: boolean;
+    pvpTagged: boolean;
+    incomingChallenge: IncomingDuelData | null;
+    outgoingChallenge: OutgoingDuelData | null;
+    activeDuel: ActiveDuelData | null;
+}
+
+export interface DuelStakeSelectionData {
+    gold: number;
+    tab?: InventoryTab;
+    index?: number;
+}
+
+export interface PlayerContextTargetData {
+    sessionId: string;
+    name: string;
+    level: number;
 }
 
 export interface HudCallbacks {
     onAllocateStat?: (stat: AllocatableStat) => void;
+    onTogglePvpMode?: () => void;
     onCreateParty?: () => void;
     onInviteParty?: (targetId: string) => void;
+    onWhisperPlayerTarget?: (targetId: string) => void;
     onKickParty?: (targetId: string) => void;
     onLeaveParty?: () => void;
     onAcceptPartyInvite?: (partyId: string) => void;
@@ -213,6 +264,10 @@ export interface HudCallbacks {
     onSellShopItem?: (tab: InventoryTab, index: number) => void;
     onAcceptQuest?: (questId: string) => void;
     onClaimQuest?: (questId: string) => void;
+    onSendDuelChallenge?: (targetId: string, stake: DuelStakeSelectionData) => void;
+    onAcceptDuelChallenge?: (challengerId: string, stake: DuelStakeSelectionData) => void;
+    onDeclineDuelChallenge?: (challengerId: string) => void;
+    onCancelDuelChallenge?: () => void;
     onSubmitChat?: (channel: Exclude<HudChatChannel, "system">, text: string) => void;
     onChatFocusChange?: (focused: boolean) => void;
 }

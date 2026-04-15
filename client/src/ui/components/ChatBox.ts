@@ -129,6 +129,14 @@ export class ChatBox {
         this.render();
     }
 
+    public activateWhisperTarget(name: string) {
+        this.whisperTargetName = name;
+        this.activeChannel = "whisper";
+        this.channelSelect.value = "whisper";
+        this.render();
+        this.focusInput();
+    }
+
     public addEntry(entry: ChatLogEntryData) {
         const shouldStickToBottom = this.isNearBottom();
         this.entries.push(entry);
