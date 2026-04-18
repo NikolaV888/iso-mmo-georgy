@@ -121,6 +121,8 @@ interface EntityPalette {
 }
 
 export class GameScene extends Phaser.Scene {
+    private static readonly PLAYER_DEPTH_BASE = 1000;
+
     private client: Colyseus.Client | null = null;
     private room: Colyseus.Room | null = null;
     private hudManager: HudManager | null = null;
@@ -303,7 +305,7 @@ export class GameScene extends Phaser.Scene {
             const targetArtY = -this.heightToScreen(airHeight);
             entity.art.y += (targetArtY - entity.art.y) * 0.25;
 
-            entity.container.setDepth(snapshot.x + snapshot.y);
+            entity.container.setDepth(this.getEntityDepth(snapshot.x, snapshot.y));
             entity.shadow.setScale(airHeight > 0.05 ? 0.82 : 1);
             entity.shadow.setAlpha(snapshot.isDead ? 0.14 : airHeight > 0.05 ? 0.2 : 0.4);
         });
@@ -589,7 +591,7 @@ export class GameScene extends Phaser.Scene {
         const healthBar = this.add.graphics();
         const art = this.add.container(0, 0, [body, head, headRing, healthBar, nameLabel]);
         const container = this.add.container(ground.x, ground.y, [shadow, art]);
-        container.setDepth(snapshot.x + snapshot.y);
+        container.setDepth(this.getEntityDepth(snapshot.x, snapshot.y));
 
         const tracked: TrackedEntity = {
             sessionId,
@@ -1145,6 +1147,10 @@ export class GameScene extends Phaser.Scene {
         const isOpen = this.isRoomTransportOpen(this.room);
         if (!isOpen) this.isRoomActive = false;
         return isOpen;
+    }
+
+    private getEntityDepth(x: number, y: number) {
+        return GameScene.PLAYER_DEPTH_BASE + x + y;
     }
 
     private isRoomTransportOpen(room: Colyseus.Room): boolean {
